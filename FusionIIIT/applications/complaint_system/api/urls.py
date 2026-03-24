@@ -1,29 +1,29 @@
 from django.conf.urls import url
-
 from . import views
 
 urlpatterns = [
+    url(r'^$', views.CheckUserRoleView.as_view(), name='check-user-roles'),
 
-    url(r'^user/detail/(?P<detailcomp_id1>[0-9]+)/$', views.complaint_details_api,name='complain-detail-get-api'),
-    url(r'^studentcomplain',views.student_complain_api,name='complain-detail2-get-api'),
-    url(r'^newcomplain',views.create_complain_api,name='complain-post-api'),
-    url(r'^updatecomplain/(?P<c_id>[0-9]+)',views.edit_complain_api,name='complain-put-api'),
-    url(r'^removecomplain/(?P<c_id>[0-9]+)',views.edit_complain_api,name='complain-delete-api'),
-    
-    
-    url(r'^workers',views.worker_api,name='worker-get-api'),
-    url(r'^addworker',views.worker_api,name='worker-post-api'),
-    url(r'^removeworker/(?P<w_id>[0-9]+)',views.edit_worker_api,name='worker-delete-api'),
-    url(r'updateworker/(?P<w_id>[0-9]+)',views.edit_worker_api,name='worker-put-api'),
+    # Complaint endpoints
+    url(r'^complaints/$', views.ComplaintListView.as_view(), name='complaint-list-lodge'),
+    url(r'^complaints/(?P<pk>\d+)/$', views.ComplaintDetailView.as_view(), name='complaint-detail'),
+    url(r'^complaints/(?P<pk>\d+)/resolve/$', views.ResolvePendingView.as_view(), name='complaint-resolve'),
+    url(r'^complaints/(?P<pk>\d+)/feedback/$', views.SubmitFeedbackView.as_view(), name='complaint-feedback'),
+    url(r'^complaints/(?P<pk>\d+)/forward/$', views.ForwardComplaintView.as_view(), name='complaint-forward'),
+    url(r'^complaints/(?P<pk>\d+)/status/(?P<status_str>\w+)/$', views.ChangeComplaintStatusView.as_view(), name='complaint-status-change'),
 
-    url(r'^caretakers',views.caretaker_api,name='caretaker-get-api'),
-    url(r'^addcaretaker',views.caretaker_api,name='caretaker-post-api'),
-    url(r'^removecaretaker/(?P<c_id>[0-9]+)',views.edit_caretaker_api,name='caretaker-delete-api'),
-    url(r'^updatecaretaker/(?P<c_id>[0-9]+)',views.edit_caretaker_api,name='caretaker-put-api'),
-    
-    url(r'^service_providers',views.service_provider_api,name='service_provider-get-api'),
-    url(r'^addservice_provider',views.service_provider_api,name='service_provider-post-api'),
-    url(r'^removeservice_provider/(?P<s_id>[0-9]+)',views.edit_service_provider_api,name='service_provider-delete-api'),
-    url(r'^updateservice_provider/(?P<s_id>[0-9]+)',views.edit_service_provider_api,name='service_provider-put-api'),
-    
+    # Reporting
+    url(r'^report/$', views.GenerateReportView.as_view(), name='generate-report'),
+
+    # Worker endpoints
+    url(r'^workers/$', views.WorkerListView.as_view(), name='worker-list'),
+    url(r'^workers/(?P<pk>\d+)/$', views.WorkerDetailView.as_view(), name='worker-detail'),
+
+    # Caretaker endpoints
+    url(r'^caretakers/$', views.CaretakerListView.as_view(), name='caretaker-list'),
+    url(r'^caretakers/(?P<pk>\d+)/$', views.CaretakerDetailView.as_view(), name='caretaker-detail'),
+
+    # Service Provider endpoints
+    url(r'^service_providers/$', views.ServiceProviderListView.as_view(), name='service-provider-list'),
+    url(r'^service_providers/(?P<pk>\d+)/$', views.ServiceProviderDetailView.as_view(), name='service-provider-detail'),
 ]
