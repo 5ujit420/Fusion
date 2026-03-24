@@ -1,10 +1,46 @@
-# imports
+# models.py
 from django.db import models
 from django.utils import timezone
 
 from applications.globals.models import ExtraInfo
 
-# Class definations:
+
+# ---------------------------------------------------------------------------
+# Constants  (V-29, V-30, R-07, R-08)
+# ---------------------------------------------------------------------------
+
+COMPLAINT_TYPE_DAYS = {
+    'Electricity': 2,
+    'Carpenter': 2,
+    'carpenter': 2,
+    'Plumber': 2,
+    'plumber': 2,
+    'Garbage': 1,
+    'garbage': 1,
+    'Dustbin': 1,
+    'dustbin': 1,
+    'Internet': 4,
+    'internet': 4,
+    'Other': 3,
+    'other': 3,
+}
+
+LOCATION_DESIGNATION_MAP = {
+    'hall-1': 'hall1caretaker',
+    'hall-3': 'hall3caretaker',
+    'hall-4': 'hall4caretaker',
+    'CC1': 'cc1convener',
+    'CC2': 'CC2 convener',
+    'core_lab': 'corelabcaretaker',
+    'LHTC': 'lhtccaretaker',
+    'NR2': 'nr2caretaker',
+    'Maa Saraswati Hostel': 'mshcaretaker',
+    'Nagarjun Hostel': 'nhcaretaker',
+    'Panini Hostel': 'phcaretaker',
+}
+
+DEFAULT_FINISH_DAYS = 2
+DEFAULT_DESIGNATION = 'rewacaretaker'
 
 
 class Constants:
@@ -23,7 +59,6 @@ class Constants:
         ('Maa Saraswati Hostel', 'Maa Saraswati Hostel'),
         ('Nagarjun Hostel', 'Nagarjun Hostel'),
         ('Panini Hostel', 'Panini Hostel'),
-
     )
     COMPLAINT_TYPE = (
         ('Electricity', 'Electricity'),
@@ -41,11 +76,11 @@ class Caretaker(models.Model):
     area = models.CharField(choices=Constants.AREA, max_length=20, default='hall-3')
     rating = models.IntegerField(default=0)
     myfeedback = models.CharField(max_length=400, default='this is my feedback')
-    # no_of_comps = models.CharField(max_length=1000)
 
     def __str__(self):
         return str(self.id) + '-' + str(self.area)
-    
+
+
 class Warden(models.Model):
     staff_id = models.ForeignKey(ExtraInfo, on_delete=models.CASCADE)
     area = models.CharField(choices=Constants.AREA, max_length=20, default='hall-1')
@@ -55,13 +90,15 @@ class Warden(models.Model):
     def __str__(self):
         return str(self.staff_id) + '-' + str(self.area)
 
+
 class SectionIncharge(models.Model):
     staff_id = models.ForeignKey(ExtraInfo, on_delete=models.CASCADE)
     work_type = models.CharField(choices=Constants.COMPLAINT_TYPE,
-                                   max_length=20, default='Electricity')
+                                 max_length=20, default='Electricity')
 
     def __str__(self):
         return str(self.id) + '-' + self.work_type
+
 
 class Workers(models.Model):
     secincharge_id = models.ForeignKey(SectionIncharge, on_delete=models.CASCADE, null=True)
@@ -89,12 +126,11 @@ class StudentComplain(models.Model):
     flag = models.IntegerField(default='0')
     reason = models.CharField(max_length=100, blank=True, default="None")
     feedback = models.CharField(max_length=500, blank=True)
-    worker_id = models.ForeignKey(Workers, blank=True, null=True,on_delete=models.CASCADE)
+    worker_id = models.ForeignKey(Workers, blank=True, null=True, on_delete=models.CASCADE)
     upload_complaint = models.FileField(blank=True)
-    comment = models.CharField(max_length=100,  default="None")
-    #upload_resolved = models.FileField(blank=True,null=True)
+    comment = models.CharField(max_length=100, default="None")
     upload_resolved = models.FileField(upload_to='resolved_complaints/', blank=True, null=True)
-    
+
     class meta:
         db_table = "complaint_system_student_complain"
 
@@ -106,16 +142,17 @@ class ServiceProvider(models.Model):
     ser_pro_id = models.ForeignKey(
         ExtraInfo,
         on_delete=models.CASCADE,
-        db_column="ser_pro_id_id"  # Map to the existing column
+        db_column="ser_pro_id_id"
     )
-    type = models.CharField(choices=Constants.COMPLAINT_TYPE, max_length=30,default='Electricity')
+    type = models.CharField(choices=Constants.COMPLAINT_TYPE, max_length=30, default='Electricity')
 
     class Meta:
         db_table = "complaint_system_service_provider"
 
     def __str__(self):
         return str(self.ser_pro_id) + '-' + str(self.type)
-    
+
+
 class Complaint_Admin(models.Model):
     sup_id = models.ForeignKey(ExtraInfo, on_delete=models.CASCADE)
 
@@ -127,9 +164,9 @@ class ServiceAuthority(models.Model):
     ser_pro_id = models.ForeignKey(
         ExtraInfo,
         on_delete=models.CASCADE,
-        db_column="ser_auth_id_id"  # Map to the existing column
+        db_column="ser_auth_id_id"
     )
-    type = models.CharField(choices=Constants.COMPLAINT_TYPE, max_length=30,default='Electricity')
+    type = models.CharField(choices=Constants.COMPLAINT_TYPE, max_length=30, default='Electricity')
 
     class Meta:
         db_table = "complaint_system_service_authority"
