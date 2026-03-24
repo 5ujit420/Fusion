@@ -1,54 +1,89 @@
+# models.py
+# V-14, V-15: Rate constants extracted from hard-coded values in views.py
+# V-40: Choice tuples preserved (TextChoices migration deferred to avoid schema changes)
+
 from django.contrib.auth.models import User
 from django.db import models
 from django.utils import timezone
 
 from applications.globals.models import ExtraInfo
 
+
+# ---------------------------------------------------------------------------
+# Choice tuples (preserved exactly to avoid migration)
+# ---------------------------------------------------------------------------
+
 VISITOR_CATEGORY = (
     ('A', 'A'),
     ('B', 'B'),
     ('C', 'C'),
     ('D', 'D'),
-    )
+)
 
 ROOM_TYPE = (
     ('SingleBed', 'SingleBed'),
     ('DoubleBed', 'DoubleBed'),
     ('VIP', 'VIP')
-    )
+)
 
 ROOM_FLOOR = (
     ('GroundFloor', 'GroundFloor'),
     ('FirstFloor', 'FirstFloor'),
     ('SecondFloor', 'SecondFloor'),
     ('ThirdFloor', 'ThirdFloor'),
-    )
+)
 
 ROOM_STATUS = (
     ('Booked', 'Booked'),
     ('CheckedIn', 'CheckedIn'),
     ('Available', 'Available'),
     ('UnderMaintenance', 'UnderMaintenance'),
-    )
+)
 
 BOOKING_STATUS = (
-    ("Confirmed" , 'Confirmed'),
-    ("Pending" , 'Pending'),
-    ("Rejected" , 'Rejected'),
-    ("Canceled" , 'Canceled'),
-    ("CancelRequested" , 'CancelRequested'),
-    ("CheckedIn" , 'CheckedIn'),
+    ("Confirmed", 'Confirmed'),
+    ("Pending", 'Pending'),
+    ("Rejected", 'Rejected'),
+    ("Canceled", 'Canceled'),
+    ("CancelRequested", 'CancelRequested'),
+    ("CheckedIn", 'CheckedIn'),
     ("Complete", 'Complete'),
     ("Forward", 'Forward')
-    )
+)
 
 BILL_TO_BE_SETTLED_BY = (
     ("Intender", "Intender"),
     ("Visitor", "Visitor"),
     ("ProjectNo", "ProjectNo"),
     ("Institute", "Institute")
-    )
+)
 
+
+# ---------------------------------------------------------------------------
+# Rate constants  (V-14, V-15)
+# ---------------------------------------------------------------------------
+
+ROOM_RATES = {
+    'A': {'SingleBed': 0, 'DoubleBed': 0, 'VIP': 0},
+    'B': {'SingleBed': 400, 'DoubleBed': 500, 'VIP': 500},
+    'C': {'SingleBed': 800, 'DoubleBed': 1000, 'VIP': 1000},
+    'D': {'SingleBed': 1400, 'DoubleBed': 1600, 'VIP': 1600},
+}
+
+MEAL_RATES = {
+    'morning_tea': 10,
+    'eve_tea': 10,
+    'breakfast': 50,
+    'lunch': 100,
+    'dinner': 100,
+}
+
+ROOM_BILL_BASE = 100  # Base charge for category B/C/D
+
+
+# ---------------------------------------------------------------------------
+# Models (schema unchanged)
+# ---------------------------------------------------------------------------
 
 class VisitorDetail(models.Model):
     visitor_phone = models.CharField(max_length=15)
@@ -64,13 +99,13 @@ class VisitorDetail(models.Model):
 
 class RoomDetail(models.Model):
     visitor = models.ManyToManyField(VisitorDetail, blank=True)
-    room_number  = models.CharField(max_length=4, unique=True)
+    room_number = models.CharField(max_length=4, unique=True)
     room_type = models.CharField(max_length=12, choices=ROOM_TYPE)
     room_floor = models.CharField(max_length=12, choices=ROOM_FLOOR)
-    room_status  = models.CharField(max_length=20, choices=ROOM_STATUS, default='Available')
+    room_status = models.CharField(max_length=20, choices=ROOM_STATUS, default='Available')
 
     def __str__(self):
-        return '{} - {}'.format(self.id, self.room_number , self.room_type, self.room_status, self.room_floor)
+        return '{} - {}'.format(self.id, self.room_number, self.room_type, self.room_status, self.room_floor)
 
 
 class BookingDetail(models.Model):
@@ -90,15 +125,15 @@ class BookingDetail(models.Model):
     check_out = models.DateField(null=True, blank=True)
     check_in_time = models.TimeField(null=True, blank=True)
     check_out_time = models.TimeField(null=True, blank=True)
-    status = models.CharField(max_length=15, choices=BOOKING_STATUS ,default ="Pending")
+    status = models.CharField(max_length=15, choices=BOOKING_STATUS, default="Pending")
     remark = models.CharField(max_length=40, blank=True, null=True)
     visitor = models.ManyToManyField(VisitorDetail)
     image = models.FileField(null=True, blank=True, upload_to='VhImage/')
     rooms = models.ManyToManyField(RoomDetail)
-    number_of_rooms =  models.IntegerField(default=1,null=True,blank=True)
-    number_of_rooms_alloted =  models.IntegerField(default=1,null=True,blank=True)
+    number_of_rooms = models.IntegerField(default=1, null=True, blank=True)
+    number_of_rooms_alloted = models.IntegerField(default=1, null=True, blank=True)
     booking_date = models.DateField(auto_now_add=False, auto_now=False, default=timezone.now)
-    bill_to_be_settled_by = models.CharField(max_length=15, choices=BILL_TO_BE_SETTLED_BY ,default ="Intender")
+    bill_to_be_settled_by = models.CharField(max_length=15, choices=BILL_TO_BE_SETTLED_BY, default="Intender")
 
     def __str__(self):
         return '%s ----> %s - %s id is %s and category is %s' % (self.id, self.visitor, self.status, self.id, self.visitor_category)
@@ -113,7 +148,7 @@ class MealRecord(models.Model):
     breakfast = models.IntegerField(default=0)
     lunch = models.IntegerField(default=0)
     dinner = models.IntegerField(default=0)
-    persons=models.IntegerField(default=0)
+    persons = models.IntegerField(default=0)
 
 
 class Bill(models.Model):
