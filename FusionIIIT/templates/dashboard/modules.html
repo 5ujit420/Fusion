@@ -76,6 +76,31 @@
 
                     {% if request.session.moduleAccessRights.visitor_hostel %}
 
+<<<<<<< HEAD
+=======
+                                    <div class="row">
+                                        <span class="ui sub header centered">Complaint System</span>
+                                    </div>
+                                </div>
+                            </a>
+                        </div>
+                   
+                    {% comment %}A single modules row ends here!{% endcomment %}
+
+                  
+
+                    {% if request.user.extrainfo.user_type == "student" or "placement chairman" == global_var or "faculty" == global_var or "placement officer" == global_var  %}
+
+                        <div style="width: calc(50% - 10px);
+                        margin: 5px;
+                        box-sizing: border-box;">
+                            <a class="ui large label" style="height: 120px; width:100%" href="/placement">
+
+                                <div class="ui centered grid">
+                                    <div class="row">
+                                        <i class="ui bitcoin icon big"></i>
+                                    </div>
+>>>>>>> pcell
 
 
                     <div style="width: calc(50% - 10px);

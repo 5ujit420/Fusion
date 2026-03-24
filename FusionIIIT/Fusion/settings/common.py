@@ -283,9 +283,13 @@ YOUTUBE_DATA_API_KEY = 'api_key'
 
 
 CORS_ORIGIN_ALLOW_ALL = True
+<<<<<<< HEAD
 ALLOW_PASS_RESET = True
 
 # session settings
 SESSION_COOKIE_AGE = 15 * 60
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True
 SESSION_SAVE_EVERY_REQUEST = True
+=======
+ALLOW_PASS_RESET = True
+>>>>>>> pcell
