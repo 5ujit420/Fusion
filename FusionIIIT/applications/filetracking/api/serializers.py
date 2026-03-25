@@ -3,7 +3,9 @@
 # Fixes: V-25, V-26, V-37, V-38
 
 from rest_framework import serializers
-from ..models import File, Tracking, MAX_FILE_SIZE_BYTES
+from ..models import File, Tracking
+
+MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
 class FileSerializer(serializers.ModelSerializer):

@@ -16,8 +16,8 @@ from reportlab.lib.styles import getSampleStyleSheet
 from applications.globals.models import Designation, HoldsDesignation, ExtraInfo
 from notification.views import file_tracking_notif
 
-from .models import File, Tracking, MAX_FILE_SIZE_BYTES
-from .api.serializers import FileSerializer, FileHeaderSerializer, TrackingSerializer
+from .models import File, Tracking
+from .api.serializers import FileSerializer, FileHeaderSerializer, TrackingSerializer, MAX_FILE_SIZE_BYTES
 from . import selectors
 
 logger = logging.getLogger(__name__)
@@ -396,33 +396,6 @@ def forward_file(file_id, receiver, receiver_designation, file_extra_JSON,
         raise ValidationError('forward data is incomplete')
 
 
-def forward_file_from_view(file_obj, requesting_user, sender_design_id,
-                           receiver_username, receiver_designation_name,
-                           upload_file, remarks):
-    """
-    Forward a file from the web view (V-07, R-02).
-    Common logic shared by forward() and edit_draft_view().
-    """
-    current_id = requesting_user.extrainfo
-    current_design = HoldsDesignation.objects.select_related(
-        'user', 'working', 'designation'
-    ).get(id=sender_design_id)
-
-    receiver_id = User.objects.get(username=receiver_username)
-    receive_design = Designation.objects.get(name=receiver_designation_name)
-
-    Tracking.objects.create(
-        file_id=file_obj,
-        current_id=current_id,
-        current_design=current_design,
-        receive_design=receive_design,
-        receiver_id=receiver_id,
-        remarks=remarks,
-        upload_file=upload_file,
-    )
-
-    file_tracking_notif(requesting_user, receiver_id, file_obj.subject)
-    return receiver_id
 
 
 # ---------------------------------------------------------------------------
@@ -467,60 +440,12 @@ def get_designations(username):
 # Edit draft  (V-08, R-02)
 # ---------------------------------------------------------------------------
 
-def edit_and_send_draft(file_obj, track_qs, requesting_user, sender_design_id,
-                        receiver_username, receiver_designation_name,
-                        upload_file, remarks, subject=None, description=None):
-    """
-    Edit a draft's metadata and send it.
-    Preserves views.py L911-977.
-    """
-    if subject is not None:
-        file_obj.subject = subject
-    if description is not None:
-        file_obj.description = description
-    file_obj.save()
-    track_qs.update(is_read=True)
-
-    # Reuse forward logic (R-02)
-    if upload_file is None and file_obj.upload_file:
-        upload_file = file_obj.upload_file
-
-    receiver_id = forward_file_from_view(
-        file_obj, requesting_user, sender_design_id,
-        receiver_username, receiver_designation_name,
-        upload_file, remarks,
-    )
-    return receiver_id
 
 
 # ---------------------------------------------------------------------------
 # File view context  (V-11)
 # ---------------------------------------------------------------------------
 
-def get_file_view_permissions(file_id, requesting_user):
-    """
-    Determine forward_enable and archive_enable flags.
-    Preserves views.py L469-480.
-    """
-    file_obj = File.objects.get(id=file_id)
-    current_owner = selectors.get_current_file_owner(file_id)
-    file_uploader = file_obj.uploader.user
-
-    last_receiver_designation = selectors.get_current_file_owner_designation(file_id)
-    last_receiver_designation_name = last_receiver_designation.name if last_receiver_designation else ''
-
-    forward_enable = False
-    archive_enable = False
-
-    if current_owner == requesting_user and file_obj.is_read is False:
-        forward_enable = True
-    if (current_owner == requesting_user
-            and last_receiver_designation_name == file_obj.designation.name
-            and file_uploader == requesting_user
-            and file_obj.is_read is False):
-        archive_enable = True
-
-    return forward_enable, archive_enable
 
 
 # ---------------------------------------------------------------------------
@@ -589,17 +514,3 @@ def generate_file_download(file_id):
 # Redirect helper  (R-04)
 # ---------------------------------------------------------------------------
 
-def get_designation_redirect_url(requesting_user, path_slug):
-    """
-    Build a redirect URL for designation-based pages (R-04).
-    Consolidates draft_design, outward, inward, archive_design.
-    """
-    dropdown_design = None  # Must be passed from session
-    raise NotImplementedError("Use get_designation_redirect_url_from_session instead")
-
-
-def get_designation_redirect_url_from_session(request, path_slug):
-    """Build redirect URL from session designation."""
-    dropdown_design = request.session.get('currentDesignationSelected', 'default_value')
-    hd_obj = selectors.get_holds_designation_obj(request.user, dropdown_design)
-    return f'/filetracking/{path_slug}/{hd_obj.id}'

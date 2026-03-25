@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework.authentication import TokenAuthentication
 
-from ..models import File, Tracking, MAX_FILE_SIZE_BYTES
+from ..models import File, Tracking
 from .serializers import (
     FileCreateInputSerializer,
     DraftCreateInputSerializer,
@@ -18,6 +18,7 @@ from .serializers import (
     InboxQuerySerializer,
     OutboxQuerySerializer,
     ArchiveInputSerializer,
+    MAX_FILE_SIZE_BYTES,
 )
 from .. import services
 

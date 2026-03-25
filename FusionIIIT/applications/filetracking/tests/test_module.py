@@ -11,7 +11,7 @@ from rest_framework import status
 from unittest.mock import patch, MagicMock
 
 from applications.globals.models import ExtraInfo, Designation, HoldsDesignation, Department
-from applications.filetracking.models import File, Tracking, MAX_FILE_SIZE_BYTES
+from applications.filetracking.models import File, Tracking
 from applications.filetracking import services
 from applications.filetracking import selectors
 from applications.filetracking.api.serializers import (
@@ -23,6 +23,7 @@ from applications.filetracking.api.serializers import (
     FileSerializer,
     TrackingSerializer,
     FileHeaderSerializer,
+    MAX_FILE_SIZE_BYTES,
 )
 
 

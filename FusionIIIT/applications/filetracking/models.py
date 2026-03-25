@@ -7,7 +7,6 @@ from applications.globals.models import ExtraInfo, HoldsDesignation, Designation
 # ---------------------------------------------------------------------------
 # Constants  (V-39)
 # ---------------------------------------------------------------------------
-MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
 class File(models.Model):
