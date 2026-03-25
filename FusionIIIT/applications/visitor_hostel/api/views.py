@@ -1,7 +1,7 @@
 # api/views.py
 # DRF API views for the visitor_hostel module.
 # All views are thin — logic delegated to services.py, queries to selectors.py.
-# Fixes: V-01, V-17–V-22
+# Fixes: V-01, V-08, V-09, V-10, R-01, R-02
 
 import logging
 
@@ -14,23 +14,27 @@ from django.contrib.auth.models import User
 
 from .. import services
 from .. import selectors
+from ..models import BookingDetail, Inventory, RoomDetail, VisitorDetail
 from .serializers import (
     BookingDetailSerializer, RoomDetailSerializer, VisitorDetailSerializer,
     BillSerializer, InventorySerializer, MealRecordSerializer,
     BookingRequestInputSerializer, UpdateBookingInputSerializer,
     ConfirmBookingInputSerializer, CancelBookingInputSerializer,
+    CancelBookingRequestInputSerializer,
     RejectBookingInputSerializer, CheckInInputSerializer,
     CheckOutInputSerializer, RecordMealInputSerializer,
     AddInventoryInputSerializer, UpdateInventoryInputSerializer,
     ForwardBookingInputSerializer, RoomAvailabilityInputSerializer,
-    BillDateRangeInputSerializer,
+    BillDateRangeInputSerializer, EditRoomStatusInputSerializer,
 )
 
 logger = logging.getLogger(__name__)
 
+_GENERIC_ERROR = 'Operation failed. Please try again.'
+
 
 # ---------------------------------------------------------------------------
-# Permission helpers  (V-17–V-22)
+# Permission helpers
 # ---------------------------------------------------------------------------
 
 class IsVhCaretakerOrIncharge(permissions.BasePermission):
@@ -48,31 +52,21 @@ class IsVhIncharge(permissions.BasePermission):
 
 
 # ---------------------------------------------------------------------------
-# Dashboard
+# Dashboard  (V-01, R-01)
 # ---------------------------------------------------------------------------
 
 class DashboardView(APIView):
+    """R-01: Uses services.build_dashboard_context() — single source of truth."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        user = request.user
-        role = services.get_user_designation(user)
-        data = {'user_designation': role}
-
-        if role == 'Intender':
-            pending = selectors.get_pending_bookings_for_intender(user)
-            active = selectors.get_active_bookings_for_intender(user)
-            dashboard = selectors.get_dashboard_bookings_for_intender(user)
-        else:
-            pending = selectors.get_pending_bookings_all()
-            active = selectors.get_active_bookings_all()
-            dashboard = selectors.get_dashboard_bookings_all()
-
-        data['pending_bookings'] = BookingDetailSerializer(pending, many=True).data
-        data['active_bookings'] = BookingDetailSerializer(active, many=True).data
-        data['dashboard_bookings'] = BookingDetailSerializer(dashboard, many=True).data
-        data['bills'] = services.calculate_active_bills(active)
+        ctx = services.build_dashboard_context(request.user)
+        data = {'user_designation': ctx['user_designation']}
+        data['pending_bookings'] = BookingDetailSerializer(ctx['pending_bookings'], many=True).data
+        data['active_bookings'] = BookingDetailSerializer(ctx['active_bookings'], many=True).data
+        data['dashboard_bookings'] = BookingDetailSerializer(ctx['dashboard_bookings'], many=True).data
+        data['bills'] = ctx['bills']
         return Response(data)
 
 
@@ -81,6 +75,7 @@ class DashboardView(APIView):
 # ---------------------------------------------------------------------------
 
 class RequestBookingView(APIView):
+    """R-02: Uses services.create_booking_with_visitor() — consolidated creation."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
@@ -90,8 +85,8 @@ class RequestBookingView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         d = serializer.validated_data
         try:
-            intender_user = User.objects.get(id=d['intender'])
-            booking = services.create_booking(
+            intender_user = selectors.get_user_by_id(d['intender'])
+            booking_params = dict(
                 intender_user=intender_user, category=d['category'],
                 person_count=d['number_of_people'], purpose=d['purpose_of_visit'],
                 booking_from=d['booking_from'], booking_to=d['booking_to'],
@@ -100,23 +95,28 @@ class RequestBookingView(APIView):
                 number_of_rooms=d['number_of_rooms'],
                 bill_to_be_settled_by=d['bill_settlement'],
             )
-            visitor = services.create_visitor(
+            visitor_params = dict(
                 visitor_name=d['name'], visitor_phone=d['phone'],
                 visitor_email=d.get('email', ''), visitor_address=d.get('address', ''),
                 visitor_organization=d.get('organization', ''),
                 nationality=d.get('nationality', ''),
             )
-            booking.visitor.add(visitor)
-            booking.save()
             uploaded = request.FILES.get('files-during-booking-request')
-            services.handle_booking_attachment(booking, uploaded)
+            booking, visitor = services.create_booking_with_visitor(
+                booking_params, visitor_params, uploaded)
             return Response({'booking_id': booking.id}, status=status.HTTP_201_CREATED)
+        except User.DoesNotExist:
+            return Response({'error': 'Intender user not found'}, status=status.HTTP_400_BAD_REQUEST)
+        except ValueError as e:
+            logger.error(f"Error creating booking: {e}")
+            return Response({'error': _GENERIC_ERROR}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             logger.error(f"Error creating booking: {e}")
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': _GENERIC_ERROR}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class UpdateBookingView(APIView):
+    """SA-1: Added ownership check — only the intender who created the booking can update it."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
@@ -126,18 +126,26 @@ class UpdateBookingView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         d = serializer.validated_data
         try:
+            booking = selectors.get_booking_by_id(d['booking_id'])
+            if booking.intender != request.user:
+                return Response(
+                    {'error': 'You can only update your own bookings.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             services.update_booking(
                 d['booking_id'], d.get('number_of_people'),
                 d.get('number_of_rooms'), d.get('booking_from'),
                 d.get('booking_to'), d.get('purpose_of_visit', ''),
             )
             return Response({'success': True})
+        except BookingDetail.DoesNotExist:
+            return Response({'error': 'Booking not found'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            logger.error(f"Error updating booking: {e}")
+            return Response({'error': _GENERIC_ERROR}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ConfirmBookingView(APIView):
-    """V-17: Requires VhIncharge role."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated, IsVhIncharge]
 
@@ -149,12 +157,16 @@ class ConfirmBookingView(APIView):
         try:
             services.confirm_booking(d['booking_id'], d['rooms'], d['category'], request.user)
             return Response({'success': True})
+        except BookingDetail.DoesNotExist:
+            return Response({'error': 'Booking not found'}, status=status.HTTP_400_BAD_REQUEST)
+        except RoomDetail.DoesNotExist:
+            return Response({'error': 'Room not found'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            logger.error(f"Error confirming booking: {e}")
+            return Response({'error': _GENERIC_ERROR}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CancelBookingView(APIView):
-    """V-18: Requires VhCaretaker or VhIncharge."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated, IsVhCaretakerOrIncharge]
 
@@ -167,26 +179,34 @@ class CancelBookingView(APIView):
             services.cancel_booking(d['booking_id'], d.get('remark', ''),
                                     d.get('charges'), request.user)
             return Response({'success': True})
+        except BookingDetail.DoesNotExist:
+            return Response({'error': 'Booking not found'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            logger.error(f"Error canceling booking: {e}")
+            return Response({'error': _GENERIC_ERROR}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CancelBookingRequestView(APIView):
+    """V-09: Now uses CancelBookingRequestInputSerializer instead of raw request.data.get()."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        booking_id = request.data.get('booking-id')
-        remark = request.data.get('remark', '')
+        serializer = CancelBookingRequestInputSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        d = serializer.validated_data
         try:
-            services.request_cancel_booking(booking_id, remark, request.user)
+            services.request_cancel_booking(d['booking_id'], d.get('remark', ''), request.user)
             return Response({'success': True})
+        except BookingDetail.DoesNotExist:
+            return Response({'error': 'Booking not found'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            logger.error(f"Error requesting cancellation: {e}")
+            return Response({'error': _GENERIC_ERROR}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class RejectBookingView(APIView):
-    """V-19: Requires VhIncharge role."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated, IsVhIncharge]
 
@@ -195,8 +215,14 @@ class RejectBookingView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         d = serializer.validated_data
-        services.reject_booking(d['booking_id'], d.get('remark', ''))
-        return Response({'success': True})
+        try:
+            services.reject_booking(d['booking_id'], d.get('remark', ''))
+            return Response({'success': True})
+        except BookingDetail.DoesNotExist:
+            return Response({'error': 'Booking not found'}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"Error rejecting booking: {e}")
+            return Response({'error': _GENERIC_ERROR}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CheckInView(APIView):
@@ -214,8 +240,11 @@ class CheckInView(APIView):
                 d.get('email', ''), d.get('address', ''),
             )
             return Response({'success': True})
+        except BookingDetail.DoesNotExist:
+            return Response({'error': 'Booking not found'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            logger.error(f"Error during check-in: {e}")
+            return Response({'error': _GENERIC_ERROR}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CheckOutView(APIView):
@@ -230,8 +259,11 @@ class CheckOutView(APIView):
         try:
             services.check_out_booking(d['id'], d['mess_bill'], d['room_bill'], request.user)
             return Response({'success': True})
+        except BookingDetail.DoesNotExist:
+            return Response({'error': 'Booking not found'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            logger.error(f"Error during check-out: {e}")
+            return Response({'error': _GENERIC_ERROR}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class RecordMealView(APIView):
@@ -249,8 +281,11 @@ class RecordMealView(APIView):
                 d['breakfast'], d['lunch'], d['eve_tea'], d['dinner'],
             )
             return Response({'success': True})
+        except (BookingDetail.DoesNotExist, VisitorDetail.DoesNotExist):
+            return Response({'error': 'Booking or visitor not found'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            logger.error(f"Error recording meal: {e}")
+            return Response({'error': _GENERIC_ERROR}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ForwardBookingView(APIView):
@@ -268,8 +303,13 @@ class ForwardBookingView(APIView):
                 d.get('remark', ''), request.user,
             )
             return Response({'success': True})
+        except BookingDetail.DoesNotExist:
+            return Response({'error': 'Booking not found'}, status=status.HTTP_400_BAD_REQUEST)
+        except RoomDetail.DoesNotExist:
+            return Response({'error': 'Room not found'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            logger.error(f"Error forwarding booking: {e}")
+            return Response({'error': _GENERIC_ERROR}, status=status.HTTP_400_BAD_REQUEST)
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +330,7 @@ class RoomAvailabilityView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# Inventory  (V-20, V-21)
+# Inventory
 # ---------------------------------------------------------------------------
 
 class AddInventoryView(APIView):
@@ -308,11 +348,13 @@ class AddInventoryView(APIView):
                 d['bill_number'], d.get('consumable', 'false'),
             )
             return Response({'success': True}, status=status.HTTP_201_CREATED)
-        except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except (ValueError, TypeError) as e:
+            logger.error(f"Error adding inventory: {e}")
+            return Response({'error': _GENERIC_ERROR}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class UpdateInventoryView(APIView):
+    """SA-3: Added error handling for consistency with other API views."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated, IsVhCaretakerOrIncharge]
 
@@ -321,8 +363,14 @@ class UpdateInventoryView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         d = serializer.validated_data
-        services.update_inventory_item(d['id'], d['quantity'])
-        return Response({'success': True})
+        try:
+            services.update_inventory_item(d['id'], d['quantity'])
+            return Response({'success': True})
+        except Inventory.DoesNotExist:
+            return Response({'error': 'Inventory item not found'}, status=status.HTTP_400_BAD_REQUEST)
+        except (ValueError, TypeError) as e:
+            logger.error(f"Error updating inventory: {e}")
+            return Response({'error': _GENERIC_ERROR}, status=status.HTTP_400_BAD_REQUEST)
 
 
 # ---------------------------------------------------------------------------
@@ -350,21 +398,24 @@ class BillBetweenDatesView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# Room status  (V-22)
+# Room status  (V-10)
 # ---------------------------------------------------------------------------
 
 class EditRoomStatusView(APIView):
+    """V-10: Now uses EditRoomStatusInputSerializer with choice validation."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated, IsVhCaretakerOrIncharge]
 
     def post(self, request):
-        room_number = request.data.get('room_number')
-        room_status = request.data.get('room_status')
-        if not room_number or not room_status:
-            return Response({'error': 'room_number and room_status required'},
-                            status=status.HTTP_400_BAD_REQUEST)
+        serializer = EditRoomStatusInputSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        d = serializer.validated_data
         try:
-            services.edit_room_status(room_number, room_status)
+            services.edit_room_status(d['room_number'], d['room_status'])
             return Response({'success': True})
+        except RoomDetail.DoesNotExist:
+            return Response({'error': 'Room not found'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            logger.error(f"Error editing room status: {e}")
+            return Response({'error': _GENERIC_ERROR}, status=status.HTTP_400_BAD_REQUEST)

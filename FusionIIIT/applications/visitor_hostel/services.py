@@ -1,14 +1,10 @@
 # services.py
 # All business logic for the visitor_hostel module.
-# Fixes: V-02, V-05–V-13, V-14–V-16, V-43–V-44, R-02, R-04, R-06, R-08, R-09
+# Fixes: V-01, V-14, V-15, V-17, V-18, V-20, R-01, R-02, R-08
 
 import datetime
 import logging
 import os
-
-from django.contrib.auth.models import User
-
-from notification.views import visitors_hostel_notif
 
 from .models import (
     BookingDetail, Bill, Inventory, InventoryBill,
@@ -18,6 +14,30 @@ from .models import (
 from . import selectors
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# V-14: Notification wrapper (decoupled from notification.views)
+# ---------------------------------------------------------------------------
+
+def _send_notification(sender, recipient, event_type):
+    """V-14: Wrapper to decouple from notification.views direct import."""
+    try:
+        from notification.views import visitors_hostel_notif
+        visitors_hostel_notif(sender, recipient, event_type)
+    except ImportError:
+        logger.warning("notification module not available")
+
+
+# ---------------------------------------------------------------------------
+# R-08: Consolidated booking status update
+# ---------------------------------------------------------------------------
+
+def _update_booking_status(booking_id, new_status, remark=''):
+    """R-08: Single helper for all status transitions."""
+    BookingDetail.objects.select_related('intender', 'caretaker').filter(
+        id=booking_id
+    ).update(status=new_status, remark=remark)
 
 
 # ---------------------------------------------------------------------------
@@ -111,23 +131,34 @@ def create_booking(intender_user, category, person_count, purpose, booking_from,
 
 
 def handle_booking_attachment(booking_obj, uploaded_file):
-    """V-06, V-43, V-44: Fixed file upload — uses os.makedirs instead of shell command."""
+    """V-20: Fixed media path to use VhImage/ subdirectory."""
     if uploaded_file is None:
         return
     from Fusion import settings
     try:
-        filename, file_extension = os.path.splitext(uploaded_file.name)  # V-43: was .booking_id
+        filename, file_extension = os.path.splitext(uploaded_file.name)
         full_path = os.path.join(settings.MEDIA_ROOT, "VhImage")
-        os.makedirs(full_path, exist_ok=True)  # V-44: replaced os.subprocess.call
+        os.makedirs(full_path, exist_ok=True)
         from django.core.files.storage import FileSystemStorage
         url = settings.MEDIA_URL + filename + file_extension
         fs = FileSystemStorage(full_path, url)
         fs.save(filename + file_extension, uploaded_file)
-        uploaded_file_url = "/media/online_cms/" + filename + file_extension
+        # V-20: Fixed path — was "/media/online_cms/", now uses correct VhImage/
+        uploaded_file_url = settings.MEDIA_URL + "VhImage/" + filename + file_extension
         booking_obj.image = uploaded_file_url
         booking_obj.save()
     except Exception as e:
         logger.error(f"Error handling booking attachment: {e}")
+
+
+def create_booking_with_visitor(booking_params, visitor_params, uploaded_file=None):
+    """R-02: Consolidated booking + visitor creation in a single service call."""
+    booking = create_booking(**booking_params)
+    handle_booking_attachment(booking, uploaded_file)
+    visitor = create_visitor(**visitor_params)
+    booking.visitor.add(visitor)
+    booking.save()
+    return booking, visitor
 
 
 # ---------------------------------------------------------------------------
@@ -151,29 +182,27 @@ def update_booking(booking_id, person_count, number_of_rooms, booking_from,
 
 
 # ---------------------------------------------------------------------------
-# Confirm booking  (V-08)
+# Confirm booking  (V-08, V-18)
 # ---------------------------------------------------------------------------
 
 def confirm_booking(booking_id, rooms_list, category, requesting_user):
-    """V-08: Extracted from confirm_booking view."""
+    """V-18: Fixed bd.category → bd.visitor_category."""
     bd = selectors.get_booking_by_id(booking_id)
     bd.status = 'Confirmed'
-    bd.category = category
+    bd.visitor_category = category  # V-18: was bd.category (non-existent field)
     bd.save()
     assign_rooms_to_booking(bd, rooms_list)
-    visitors_hostel_notif(requesting_user, bd.intender, 'booking_confirmation')
+    _send_notification(requesting_user, bd.intender, 'booking_confirmation')
     return bd
 
 
 # ---------------------------------------------------------------------------
-# Cancel booking  (V-09)
+# Cancel booking  (V-09, R-08)
 # ---------------------------------------------------------------------------
 
 def cancel_booking(booking_id, remark, charges, caretaker_user):
-    """V-09: Extracted from cancel_booking view."""
-    BookingDetail.objects.select_related('intender', 'caretaker').filter(
-        id=booking_id
-    ).update(status='Canceled', remark=remark)
+    """V-09, R-08: Uses _update_booking_status helper."""
+    _update_booking_status(booking_id, 'Canceled', remark)
 
     booking = selectors.get_booking_by_id(booking_id)
     x = 0
@@ -182,43 +211,39 @@ def cancel_booking(booking_id, remark, charges, caretaker_user):
     else:
         create_bill(booking, x, x, caretaker_user)
 
-    visitors_hostel_notif(caretaker_user, booking.intender, 'booking_cancellation_request_accepted')
+    _send_notification(caretaker_user, booking.intender, 'booking_cancellation_request_accepted')
     return booking
 
 
 # ---------------------------------------------------------------------------
-# Cancel booking request  (V-09)
+# Cancel booking request  (R-08)
 # ---------------------------------------------------------------------------
 
 def request_cancel_booking(booking_id, remark, requesting_user):
-    """Extracted from cancel_booking_request view."""
-    BookingDetail.objects.select_related('intender', 'caretaker').filter(
-        id=booking_id
-    ).update(status='CancelRequested', remark=remark)
+    """R-08: Uses _update_booking_status helper."""
+    _update_booking_status(booking_id, 'CancelRequested', remark)
 
     incharge = selectors.get_incharge_user()
     if incharge:
-        visitors_hostel_notif(requesting_user, incharge, 'cancellation_request_placed')
+        _send_notification(requesting_user, incharge, 'cancellation_request_placed')
 
 
 # ---------------------------------------------------------------------------
-# Reject booking  (V-09)
+# Reject booking  (R-08)
 # ---------------------------------------------------------------------------
 
 def reject_booking(booking_id, remark):
-    """Extracted from reject_booking view."""
-    BookingDetail.objects.select_related('intender', 'caretaker').filter(
-        id=booking_id
-    ).update(status="Rejected", remark=remark)
+    """R-08: Uses _update_booking_status helper."""
+    _update_booking_status(booking_id, 'Rejected', remark)
 
 
 # ---------------------------------------------------------------------------
-# Check in  (V-05)
+# Check in
 # ---------------------------------------------------------------------------
 
 def check_in_visitor(booking_id, visitor_name, visitor_phone, visitor_email='',
                      visitor_address=''):
-    """Extracted from check_in view. V-27: specific exception."""
+    """Extracted from check_in view."""
     visitor = create_visitor(
         visitor_name=visitor_name,
         visitor_phone=visitor_phone,
@@ -234,11 +259,11 @@ def check_in_visitor(booking_id, visitor_name, visitor_phone, visitor_email='',
 
 
 # ---------------------------------------------------------------------------
-# Check out  (V-10)
+# Check out
 # ---------------------------------------------------------------------------
 
 def check_out_booking(booking_id, meal_bill, room_bill, caretaker_user):
-    """V-10: Extracted from check_out view."""
+    """Extracted from check_out view."""
     checkout_date = datetime.date.today()
     BookingDetail.objects.select_related('intender', 'caretaker').filter(
         id=booking_id
@@ -251,11 +276,11 @@ def check_out_booking(booking_id, meal_bill, room_bill, caretaker_user):
 
 
 # ---------------------------------------------------------------------------
-# Record meal  (V-11)
+# Record meal
 # ---------------------------------------------------------------------------
 
 def record_meal(booking_id, visitor_id, m_tea, breakfast, lunch, eve_tea, dinner):
-    """V-11, V-28: Extracted from record_meal view. Uses specific exception."""
+    """Extracted from record_meal view."""
     booking = selectors.get_booking_by_id(booking_id)
     visitor = selectors.get_visitor_by_id(visitor_id)
     date_1 = datetime.datetime.today()
@@ -285,11 +310,11 @@ def record_meal(booking_id, visitor_id, m_tea, breakfast, lunch, eve_tea, dinner
 
 
 # ---------------------------------------------------------------------------
-# Bill calculation  (V-05, V-14, V-15)
+# Bill calculation  (V-15)
 # ---------------------------------------------------------------------------
 
 def calculate_room_bill(booking):
-    """V-14: Uses ROOM_RATES constants instead of hard-coded values."""
+    """Uses ROOM_RATES constants instead of hard-coded values."""
     rooms = booking.rooms.all()
     days = (datetime.date.today() - booking.check_in).days
     category = booking.visitor_category
@@ -309,28 +334,25 @@ def calculate_room_bill(booking):
 
 
 def calculate_mess_bill(booking):
-    """V-15: Uses MEAL_RATES constants instead of hard-coded values."""
+    """V-15: Fixed N+1 — meals query hoisted outside visitor loop."""
+    meals = selectors.get_meal_records_for_booking(booking.id)
     mess_bill = 0
-    for visitor in booking.visitor.all():
-        meals = selectors.get_meal_records_for_booking(booking.id)
-        mess_bill1 = 0
-        for m in meals:
-            if m.morning_tea != 0:
-                mess_bill1 += m.morning_tea * MEAL_RATES['morning_tea']
-            if m.eve_tea != 0:
-                mess_bill1 += m.eve_tea * MEAL_RATES['eve_tea']
-            if m.breakfast != 0:
-                mess_bill1 += m.breakfast * MEAL_RATES['breakfast']
-            if m.lunch != 0:
-                mess_bill1 += m.lunch * MEAL_RATES['lunch']
-            if m.dinner != 0:
-                mess_bill1 += m.dinner * MEAL_RATES['dinner']
-            mess_bill += mess_bill1
+    for m in meals:
+        if m.morning_tea != 0:
+            mess_bill += m.morning_tea * MEAL_RATES['morning_tea']
+        if m.eve_tea != 0:
+            mess_bill += m.eve_tea * MEAL_RATES['eve_tea']
+        if m.breakfast != 0:
+            mess_bill += m.breakfast * MEAL_RATES['breakfast']
+        if m.lunch != 0:
+            mess_bill += m.lunch * MEAL_RATES['lunch']
+        if m.dinner != 0:
+            mess_bill += m.dinner * MEAL_RATES['dinner']
     return mess_bill
 
 
 def calculate_active_bills(active_bookings):
-    """V-05: Calculate bills for all checked-in bookings."""
+    """Calculate bills for all checked-in bookings."""
     bills = {}
     for booking in active_bookings:
         if booking.status == 'CheckedIn':
@@ -346,11 +368,14 @@ def calculate_active_bills(active_bookings):
 
 
 # ---------------------------------------------------------------------------
-# Visitor / room counts for dashboard  (R-02)
+# Visitor / room counts for dashboard  (V-17)
 # ---------------------------------------------------------------------------
 
 def get_visitor_and_room_counts(active_bookings):
-    """R-02: Consolidated visitor and room iteration."""
+    """V-17: Added prefetch guard for rooms — applies prefetch if not already done."""
+    if hasattr(active_bookings, '_prefetch_related_lookups'):
+        if 'rooms' not in active_bookings._prefetch_related_lookups:
+            active_bookings = active_bookings.prefetch_related('rooms')
     visitors = {}
     rooms = {}
     for booking in active_bookings:
@@ -384,11 +409,11 @@ def get_visitor_list_from_dashboard(dashboard_bookings):
 
 
 # ---------------------------------------------------------------------------
-# Balance calculation  (V-05)
+# Balance calculation
 # ---------------------------------------------------------------------------
 
 def calculate_current_balance():
-    """V-05: Extract balance calculation from dashboard view."""
+    """Extract balance calculation from dashboard view."""
     all_bills = selectors.get_all_bills()
     inventory_bills = selectors.get_all_inventory_bills()
 
@@ -412,11 +437,11 @@ def calculate_current_balance():
 
 
 # ---------------------------------------------------------------------------
-# Room availability  (R-04)
+# Room availability
 # ---------------------------------------------------------------------------
 
 def compute_room_availability(pending_bookings):
-    """R-04: Compute available rooms for each pending booking."""
+    """Compute available rooms for each pending booking."""
     available_rooms = {}
     for booking in pending_bookings:
         available = selectors.get_available_rooms(booking.booking_from, booking.booking_to)
@@ -425,7 +450,7 @@ def compute_room_availability(pending_bookings):
 
 
 def compute_forwarded_rooms(forwarded_bookings):
-    """R-04: Compute forwarded rooms for forwarded bookings."""
+    """Compute forwarded rooms for forwarded bookings."""
     forwarded_rooms = {}
     for booking in forwarded_bookings:
         rooms = selectors.get_forwarded_booking_rooms(booking.booking_from, booking.booking_to)
@@ -434,7 +459,7 @@ def compute_forwarded_rooms(forwarded_bookings):
 
 
 # ---------------------------------------------------------------------------
-# Bill between dates  (V-05)
+# Bill between dates
 # ---------------------------------------------------------------------------
 
 def get_bill_report(date1, date2):
@@ -454,7 +479,7 @@ def get_bill_report(date1, date2):
 
 
 # ---------------------------------------------------------------------------
-# Inventory management  (V-20, V-21)
+# Inventory management
 # ---------------------------------------------------------------------------
 
 def add_inventory_item(item_name, quantity, cost, bill_number, consumable):
@@ -491,14 +516,12 @@ def edit_room_status(room_number, room_status):
 
 
 # ---------------------------------------------------------------------------
-# Forward booking  (V-13)
+# Forward booking  (R-08)
 # ---------------------------------------------------------------------------
 
 def forward_booking(booking_id, modified_category, rooms_list, remark, requesting_user):
-    """V-13: Extracted from forward_booking view."""
-    BookingDetail.objects.select_related('intender', 'caretaker').filter(
-        id=booking_id
-    ).update(status="Forward", remark=remark)
+    """R-08: Uses _update_booking_status helper."""
+    _update_booking_status(booking_id, 'Forward', remark)
 
     bd = selectors.get_booking_by_id(booking_id)
     bd.modified_visitor_category = modified_category
@@ -508,5 +531,77 @@ def forward_booking(booking_id, modified_category, rooms_list, remark, requestin
 
     incharge = selectors.get_incharge_user()
     if incharge:
-        visitors_hostel_notif(requesting_user, incharge, 'booking_forwarded')
+        _send_notification(requesting_user, incharge, 'booking_forwarded')
     return bd
+
+
+# ---------------------------------------------------------------------------
+# V-01, R-01: Consolidated dashboard context builder
+# ---------------------------------------------------------------------------
+
+def build_dashboard_context(user):
+    """V-01, R-01: Single source for dashboard data used by both legacy and API views."""
+    user_designation = get_user_designation(user)
+
+    available_rooms = {}
+    forwarded_rooms = {}
+    cancel_booking_request = []
+
+    if user_designation == "Intender":
+        pending_bookings = selectors.get_pending_bookings_for_intender(user)
+        active_bookings = selectors.get_active_bookings_for_intender(user)
+        dashboard_bookings = selectors.get_dashboard_bookings_for_intender(user)
+        complete_bookings = selectors.get_complete_bookings_for_intender(user)
+        canceled_bookings = selectors.get_canceled_bookings_for_intender(user)
+        rejected_bookings = selectors.get_rejected_bookings_for_intender(user)
+        cancel_booking_requested = selectors.get_cancel_requested_bookings_for_intender(user)
+    else:
+        pending_bookings = selectors.get_pending_bookings_all()
+        active_bookings = selectors.get_active_bookings_all()
+        dashboard_bookings = selectors.get_dashboard_bookings_all()
+        cancel_booking_request = selectors.get_cancel_requests_all()
+        complete_bookings = selectors.get_complete_bookings_all()
+        canceled_bookings = selectors.get_canceled_bookings_all()
+        rejected_bookings = selectors.get_rejected_bookings_all()
+        cancel_booking_requested = selectors.get_cancel_requested_bookings_for_intender(
+            user, future_only=True)
+        c_bookings = selectors.get_forwarded_bookings()
+        available_rooms = compute_room_availability(pending_bookings)
+        forwarded_rooms = compute_forwarded_rooms(c_bookings)
+
+    all_bookings = selectors.get_all_bookings()
+    visitors, rooms = get_visitor_and_room_counts(active_bookings)
+    inventory = selectors.get_all_inventory()
+    inventory_bill = selectors.get_all_inventory_bills()
+    completed_booking_bills, current_balance = calculate_current_balance()
+    active_visitors = get_active_visitor_map(active_bookings)
+    bills = calculate_active_bills(active_bookings)
+    previous_visitors = selectors.get_all_visitors()
+    visitor_list = get_visitor_list_from_dashboard(dashboard_bookings)
+
+    return {
+        'all_bookings': all_bookings,
+        'complete_bookings': complete_bookings,
+        'pending_bookings': pending_bookings,
+        'active_bookings': active_bookings,
+        'canceled_bookings': canceled_bookings,
+        'dashboard_bookings': dashboard_bookings,
+        'bills': bills,
+        'available_rooms': available_rooms,
+        'forwarded_rooms': forwarded_rooms,
+        'inventory': inventory,
+        'inventory_bill': inventory_bill,
+        'active_visitors': active_visitors,
+        'intenders': selectors.get_all_intenders(),
+        'user': user,
+        'visitors': visitors,
+        'rooms': rooms,
+        'previous_visitors': previous_visitors,
+        'completed_booking_bills': completed_booking_bills,
+        'current_balance': current_balance,
+        'rejected_bookings': rejected_bookings,
+        'cancel_booking_request': cancel_booking_request,
+        'cancel_booking_requested': cancel_booking_requested,
+        'user_designation': user_designation,
+        'visitor_list': visitor_list,  # SA-4: Was computed but not returned
+    }

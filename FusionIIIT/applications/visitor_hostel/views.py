@@ -1,102 +1,115 @@
 # views.py
-# Thin legacy views for the visitor_hostel module.
+# Legacy views for the visitor_hostel module.
 # All business logic delegated to services.py, all queries to selectors.py.
-# Fixes: V-05–V-13, V-16, V-22–V-32, V-35–V-36, V-38–V-39, V-41, V-43–V-44
-# Removed: V-29/V-30 (all print statements), V-31 (commented-out code)
-# Removed: V-38 (unused Caretaker import), V-39 (wildcard imports)
-# Removed: V-32 (broken bill_generation view)
+# Fixes: V-01 to V-07, R-01, R-04, R-06 bug fix
+# V-01: visitorhostel() now calls services.build_dashboard_context()
+# V-02/V-03: User.objects.all() replaced with selectors.get_all_intenders()
+# V-04: User.objects.get() replaced with selectors.get_user_by_id()
+# V-05: All legacy POST views validate input via DRF serializers
+# V-06: Role-based permission decorator applied to restricted views
+# V-07: Django messages framework for error feedback
+# R-04: Legacy action views marked deprecated with logging
+# R-06: Fixed get_cancel_requested_for_intender → get_cancel_requested_bookings_for_intender
 
 import logging
+import warnings
 
+from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.http import HttpResponseRedirect, HttpResponse
+from django.http import HttpResponseRedirect, HttpResponse, HttpResponseForbidden
 from django.shortcuts import render
-from django.contrib.auth.models import User
+from functools import wraps
 
 from . import services
 from . import selectors
-from .models import BookingDetail
+from .api.serializers import (
+    BookingRequestInputSerializer, UpdateBookingInputSerializer,
+    ConfirmBookingInputSerializer, CancelBookingInputSerializer,
+    CancelBookingRequestInputSerializer, RejectBookingInputSerializer,
+    CheckInInputSerializer, CheckOutInputSerializer,
+    RecordMealInputSerializer, AddInventoryInputSerializer,
+    UpdateInventoryInputSerializer, EditRoomStatusInputSerializer,
+    ForwardBookingInputSerializer, RoomAvailabilityInputSerializer,
+    BillDateRangeInputSerializer,
+)
 
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# V-06: Role-based permission decorator
+# ---------------------------------------------------------------------------
+
+def role_required(allowed_roles):
+    """V-06: Decorator to enforce role-based access on legacy views.
+    allowed_roles: list of role strings, e.g. ['VhCaretaker', 'VhIncharge']
+    """
+    def decorator(view_func):
+        @wraps(view_func)
+        def wrapper(request, *args, **kwargs):
+            user_role = selectors.get_user_role(request.user)
+            if user_role not in allowed_roles:
+                messages.error(request, 'You do not have permission to perform this action.')
+                return HttpResponseForbidden('Forbidden')
+            return view_func(request, *args, **kwargs)
+        return wrapper
+    return decorator
+
+
+# ---------------------------------------------------------------------------
+# R-04: Deprecation helper
+# ---------------------------------------------------------------------------
+
+def _deprecation_warning(view_name):
+    """R-04: Log deprecation warning for legacy views."""
+    warnings.warn(
+        f"Legacy view '{view_name}' is deprecated. Use the corresponding API endpoint instead.",
+        DeprecationWarning, stacklevel=3,
+    )
+    logger.info(f"Deprecated legacy view called: {view_name}")
+
+
+# ---------------------------------------------------------------------------
+# V-05: POST validation helper
+# ---------------------------------------------------------------------------
+
+def _validate_post(request, serializer_class, field_mapping=None, list_fields=None):
+    """V-05: Validate request.POST data through a DRF serializer.
+    field_mapping: dict mapping POST key names to serializer field names.
+    list_fields: dict mapping POST list key names to serializer field names.
+    Returns (validated_data, None) on success, (None, errors_dict) on failure.
+    """
+    data = {}
+    for key, value in request.POST.items():
+        mapped_key = field_mapping.get(key, key) if field_mapping else key
+        data[mapped_key] = value
+    if list_fields:
+        for post_key, ser_key in list_fields.items():
+            data[ser_key] = request.POST.getlist(post_key)
+    serializer = serializer_class(data=data)
+    if not serializer.is_valid():
+        return None, serializer.errors
+    return serializer.validated_data, None
+
+
+# ---------------------------------------------------------------------------
+# Dashboard  (V-01, R-01)
+# ---------------------------------------------------------------------------
+
 @login_required(login_url='/accounts/login/')
 def visitorhostel(request):
-    """
-    V-05: Dashboard view — delegates to services/selectors.
-    R-01: Parametric queries by role. R-02: Consolidated visitor/room counts.
-    V-35: Removed User.objects.all(). V-36: Deferred previous_visitors.
-    """
-    user = request.user
-    user_designation = services.get_user_designation(user)
+    """V-01, R-01: Thin view — delegates entirely to services.build_dashboard_context()."""
+    context = services.build_dashboard_context(request.user)
+    return render(request, "vhModule/visitorhostel.html", context)
 
-    available_rooms = {}
-    forwarded_rooms = {}
-    cancel_booking_request = []
 
-    if user_designation == "Intender":
-        pending_bookings = selectors.get_pending_bookings_for_intender(user)
-        active_bookings = selectors.get_active_bookings_for_intender(user)
-        dashboard_bookings = selectors.get_dashboard_bookings_for_intender(user)
-        complete_bookings = selectors.get_complete_bookings_for_intender(user)
-        canceled_bookings = selectors.get_canceled_bookings_for_intender(user)
-        rejected_bookings = selectors.get_rejected_bookings_for_intender(user)
-        cancel_booking_requested = selectors.get_cancel_requested_bookings_for_intender(user)
-    else:
-        pending_bookings = selectors.get_pending_bookings_all()
-        active_bookings = selectors.get_active_bookings_all()
-        dashboard_bookings = selectors.get_dashboard_bookings_all()
-        cancel_booking_request = selectors.get_cancel_requests_all()
-        complete_bookings = selectors.get_complete_bookings_all()
-        canceled_bookings = selectors.get_canceled_bookings_all()
-        rejected_bookings = selectors.get_rejected_bookings_all()
-        cancel_booking_requested = selectors.get_cancel_requested_for_intender(user)
-        c_bookings = selectors.get_forwarded_bookings()
-
-        available_rooms = services.compute_room_availability(pending_bookings)
-        forwarded_rooms = services.compute_forwarded_rooms(c_bookings)
-
-    all_bookings = selectors.get_all_bookings()
-    visitors, rooms = services.get_visitor_and_room_counts(active_bookings)
-
-    inventory = selectors.get_all_inventory()
-    inventory_bill = selectors.get_all_inventory_bills()
-
-    completed_booking_bills, current_balance = services.calculate_current_balance()
-    active_visitors = services.get_active_visitor_map(active_bookings)
-    bills = services.calculate_active_bills(active_bookings)
-    previous_visitors = selectors.get_all_visitors()
-    visitor_list = services.get_visitor_list_from_dashboard(dashboard_bookings)
-
-    return render(request, "vhModule/visitorhostel.html", {
-        'all_bookings': all_bookings,
-        'complete_bookings': complete_bookings,
-        'pending_bookings': pending_bookings,
-        'active_bookings': active_bookings,
-        'canceled_bookings': canceled_bookings,
-        'dashboard_bookings': dashboard_bookings,
-        'bills': bills,
-        'available_rooms': available_rooms,
-        'forwarded_rooms': forwarded_rooms,
-        'inventory': inventory,
-        'inventory_bill': inventory_bill,
-        'active_visitors': active_visitors,
-        'intenders': User.objects.all(),
-        'user': user,
-        'visitors': visitors,
-        'rooms': rooms,
-        'previous_visitors': previous_visitors,
-        'completed_booking_bills': completed_booking_bills,
-        'current_balance': current_balance,
-        'rejected_bookings': rejected_bookings,
-        'cancel_booking_request': cancel_booking_request,
-        'cancel_booking_requested': cancel_booking_requested,
-        'user_designation': user_designation,
-    })
-
+# ---------------------------------------------------------------------------
+# Deprecated partial views (5B: dead endpoints, kept for backwards compat)
+# ---------------------------------------------------------------------------
 
 @login_required(login_url='/accounts/login/')
 def get_booking_requests(request):
+    _deprecation_warning('get_booking_requests')
     if request.method == 'POST':
         pending_bookings = selectors.get_booking_requests_pending()
         return render(request, "vhModule/visitorhostel.html", {'pending_bookings': pending_bookings})
@@ -105,6 +118,7 @@ def get_booking_requests(request):
 
 @login_required(login_url='/accounts/login/')
 def get_active_bookings(request):
+    _deprecation_warning('get_active_bookings')
     if request.method == 'POST':
         active_bookings = selectors.get_active_bookings_confirmed()
         return render(request, "vhModule/visitorhostel.html", {'active_bookings': active_bookings})
@@ -113,6 +127,7 @@ def get_active_bookings(request):
 
 @login_required(login_url='/accounts/login/')
 def get_inactive_bookings(request):
+    _deprecation_warning('get_inactive_bookings')
     if request.method == 'POST':
         inactive_bookings = selectors.get_inactive_bookings()
         return render(request, "vhModule/visitorhostel.html", {'inactive_bookings': inactive_bookings})
@@ -121,203 +136,282 @@ def get_inactive_bookings(request):
 
 @login_required(login_url='/accounts/login/')
 def get_booking_form(request):
+    """V-02: Uses selectors.get_all_intenders() instead of User.objects.all()."""
+    _deprecation_warning('get_booking_form')
     if request.method == 'POST':
-        intenders = User.objects.all()
+        intenders = selectors.get_all_intenders()
         return render(request, "vhModule/visitorhostel.html", {'intenders': intenders})
     return HttpResponseRedirect('/visitorhostel/')
 
 
+# ---------------------------------------------------------------------------
+# Booking CRUD  (V-05 validation, V-06 role checks, V-07 messages, R-04 deprecation)
+# ---------------------------------------------------------------------------
+
 @login_required(login_url='/accounts/login/')
 def request_booking(request):
-    """V-06: Delegates to services.create_booking() + services.create_visitor()."""
+    """V-04/V-05: Validates via BookingRequestInputSerializer, uses selectors.get_user_by_id()."""
+    _deprecation_warning('request_booking')
     if request.method == 'POST':
+        validated, errors = _validate_post(request, BookingRequestInputSerializer, {
+            'number-of-people': 'number_of_people',
+            'purpose-of-visit': 'purpose_of_visit',
+            'number-of-rooms': 'number_of_rooms',
+        })
+        if errors:
+            messages.error(request, f'Invalid booking data: {errors}')
+            return HttpResponseRedirect('/visitorhostel/')
         try:
-            intender_id = request.POST.get('intender')
-            intender_user = User.objects.get(id=intender_id)
-
-            booking_obj = services.create_booking(
-                intender_user=intender_user,
-                category=request.POST.get('category'),
-                person_count=request.POST.get('number-of-people'),
-                purpose=request.POST.get('purpose-of-visit'),
-                booking_from=request.POST.get('booking_from'),
-                booking_to=request.POST.get('booking_to'),
-                arrival_time=request.POST.get('booking_from_time'),
-                departure_time=request.POST.get('booking_to_time'),
-                number_of_rooms=request.POST.get('number-of-rooms'),
-                bill_to_be_settled_by=request.POST.get('bill_settlement'),
+            intender_user = selectors.get_user_by_id(validated['intender'])
+            booking_params = dict(
+                intender_user=intender_user, category=validated['category'],
+                person_count=validated['number_of_people'],
+                purpose=validated['purpose_of_visit'],
+                booking_from=validated['booking_from'],
+                booking_to=validated['booking_to'],
+                arrival_time=validated.get('booking_from_time', ''),
+                departure_time=validated.get('booking_to_time', ''),
+                number_of_rooms=validated['number_of_rooms'],
+                bill_to_be_settled_by=validated['bill_settlement'],
             )
-
+            visitor_params = dict(
+                visitor_name=validated['name'],
+                visitor_phone=validated['phone'],
+                visitor_email=validated.get('email', ''),
+                visitor_address=validated.get('address', ''),
+                visitor_organization=validated.get('organization', ''),
+                nationality=validated.get('nationality', ''),
+            )
             doc = request.FILES.get('files-during-booking-request')
-            services.handle_booking_attachment(booking_obj, doc)
-
-            visitor = services.create_visitor(
-                visitor_name=request.POST.get('name'),
-                visitor_phone=request.POST.get('phone'),
-                visitor_email=request.POST.get('email', ''),
-                visitor_address=request.POST.get('address', ''),
-                visitor_organization=request.POST.get('organization', ''),
-                nationality=request.POST.get('nationality', ''),
-            )
-            booking_obj.visitor.add(visitor)
-            booking_obj.save()
+            services.create_booking_with_visitor(booking_params, visitor_params, doc)
         except Exception as e:
             logger.error(f"Error in request_booking: {e}")
-
+            messages.error(request, 'Failed to create booking. Please try again.')
         return HttpResponseRedirect('/visitorhostel/')
     return HttpResponseRedirect('/visitorhostel/')
 
 
 @login_required(login_url='/accounts/login/')
 def update_booking(request):
-    """V-07: Delegates to services.update_booking()."""
+    """V-05: Validates via UpdateBookingInputSerializer."""
+    _deprecation_warning('update_booking')
     if request.method == 'POST':
+        validated, errors = _validate_post(request, UpdateBookingInputSerializer, {
+            'booking-id': 'booking_id',
+            'number-of-people': 'number_of_people',
+            'purpose-of-visit': 'purpose_of_visit',
+            'number-of-rooms': 'number_of_rooms',
+        })
+        if errors:
+            messages.error(request, f'Invalid update data: {errors}')
+            return HttpResponseRedirect('/visitorhostel/')
         try:
             services.update_booking(
-                booking_id=request.POST.get('booking-id'),
-                person_count=request.POST.get('number-of-people'),
-                number_of_rooms=request.POST.get('number-of-rooms'),
-                booking_from=request.POST.get('booking_from'),
-                booking_to=request.POST.get('booking_to'),
-                purpose=request.POST.get('purpose-of-visit'),
+                booking_id=validated['booking_id'],
+                person_count=validated.get('number_of_people'),
+                number_of_rooms=validated.get('number_of_rooms'),
+                booking_from=validated.get('booking_from'),
+                booking_to=validated.get('booking_to'),
+                purpose=validated.get('purpose_of_visit', ''),
             )
         except Exception as e:
             logger.error(f"Error in update_booking: {e}")
+            messages.error(request, 'Failed to update booking.')
         return HttpResponseRedirect('/visitorhostel/')
     return HttpResponseRedirect('/visitorhostel/')
 
 
 @login_required(login_url='/accounts/login/')
+@role_required(['VhIncharge'])
 def confirm_booking(request):
-    """V-08: Delegates to services.confirm_booking() with R-08."""
+    """V-05/V-06: Validated + role-restricted to VhIncharge."""
+    _deprecation_warning('confirm_booking')
     if request.method == 'POST':
+        validated, errors = _validate_post(
+            request, ConfirmBookingInputSerializer,
+            {'booking-id': 'booking_id'},
+            list_fields={'rooms[]': 'rooms'},
+        )
+        if errors:
+            messages.error(request, f'Invalid confirmation data: {errors}')
+            return HttpResponseRedirect('/visitorhostel/')
         try:
             services.confirm_booking(
-                booking_id=request.POST.get('booking-id'),
-                rooms_list=request.POST.getlist('rooms[]'),
-                category=request.POST.get('category'),
+                booking_id=validated['booking_id'],
+                rooms_list=validated['rooms'],
+                category=validated['category'],
                 requesting_user=request.user,
             )
         except Exception as e:
             logger.error(f"Error in confirm_booking: {e}")
+            messages.error(request, 'Failed to confirm booking.')
         return HttpResponseRedirect('/visitorhostel/')
     return HttpResponseRedirect('/visitorhostel/')
 
 
 @login_required(login_url='/accounts/login/')
+@role_required(['VhCaretaker', 'VhIncharge'])
 def cancel_booking(request):
-    """V-09: Delegates to services.cancel_booking() with R-09."""
+    """V-05/V-06: Validated + role-restricted."""
+    _deprecation_warning('cancel_booking')
     if request.method == 'POST':
+        validated, errors = _validate_post(request, CancelBookingInputSerializer, {
+            'booking-id': 'booking_id',
+        })
+        if errors:
+            messages.error(request, f'Invalid cancellation data: {errors}')
+            return HttpResponseRedirect('/visitorhostel/')
         try:
             services.cancel_booking(
-                booking_id=request.POST.get('booking-id'),
-                remark=request.POST.get('remark', ''),
-                charges=request.POST.get('charges'),
+                booking_id=validated['booking_id'],
+                remark=validated.get('remark', ''),
+                charges=validated.get('charges'),
                 caretaker_user=request.user,
             )
         except Exception as e:
             logger.error(f"Error in cancel_booking: {e}")
+            messages.error(request, 'Failed to cancel booking.')
         return HttpResponseRedirect('/visitorhostel/')
     return HttpResponseRedirect('/visitorhostel/')
 
 
 @login_required(login_url='/accounts/login/')
 def cancel_booking_request(request):
-    """Delegates to services.request_cancel_booking()."""
+    """V-05: Validates via CancelBookingRequestInputSerializer."""
+    _deprecation_warning('cancel_booking_request')
     if request.method == 'POST':
+        validated, errors = _validate_post(request, CancelBookingRequestInputSerializer, {
+            'booking-id': 'booking_id',
+        })
+        if errors:
+            messages.error(request, f'Invalid cancellation request: {errors}')
+            return HttpResponseRedirect('/visitorhostel/')
         try:
             services.request_cancel_booking(
-                booking_id=request.POST.get('booking-id'),
-                remark=request.POST.get('remark', ''),
+                booking_id=validated['booking_id'],
+                remark=validated.get('remark', ''),
                 requesting_user=request.user,
             )
         except Exception as e:
             logger.error(f"Error in cancel_booking_request: {e}")
+            messages.error(request, 'Failed to submit cancellation request.')
         return HttpResponseRedirect('/visitorhostel/')
     return HttpResponseRedirect('/visitorhostel/')
 
 
 @login_required(login_url='/accounts/login/')
+@role_required(['VhIncharge'])
 def reject_booking(request):
-    """V-19: Delegates to services.reject_booking()."""
+    """V-05/V-06: Validated + role-restricted to VhIncharge."""
+    _deprecation_warning('reject_booking')
     if request.method == 'POST':
+        validated, errors = _validate_post(request, RejectBookingInputSerializer, {
+            'booking-id': 'booking_id',
+        })
+        if errors:
+            messages.error(request, f'Invalid rejection data: {errors}')
+            return HttpResponseRedirect('/visitorhostel/')
         try:
             services.reject_booking(
-                booking_id=request.POST.get('booking-id'),
-                remark=request.POST.get('remark', ''),
+                booking_id=validated['booking_id'],
+                remark=validated.get('remark', ''),
             )
         except Exception as e:
             logger.error(f"Error in reject_booking: {e}")
+            messages.error(request, 'Failed to reject booking.')
         return HttpResponseRedirect('/visitorhostel/')
     return HttpResponseRedirect('/visitorhostel/')
 
 
 @login_required(login_url='/accounts/login/')
+@role_required(['VhCaretaker', 'VhIncharge'])
 def check_in(request):
-    """V-27: Specific exception handling. Delegates to services.check_in_visitor()."""
+    """V-05/V-06: Validated + role-restricted."""
+    _deprecation_warning('check_in')
     if request.method == 'POST':
+        validated, errors = _validate_post(request, CheckInInputSerializer, {
+            'booking-id': 'booking_id',
+        })
+        if errors:
+            messages.error(request, f'Invalid check-in data: {errors}')
+            return HttpResponse('/visitorhostel/')
         try:
             services.check_in_visitor(
-                booking_id=request.POST.get('booking-id'),
-                visitor_name=request.POST.get('name'),
-                visitor_phone=request.POST.get('phone'),
-                visitor_email=request.POST.get('email', ''),
-                visitor_address=request.POST.get('address', ''),
+                booking_id=validated['booking_id'],
+                visitor_name=validated['name'],
+                visitor_phone=validated['phone'],
+                visitor_email=validated.get('email', ''),
+                visitor_address=validated.get('address', ''),
             )
-        except BookingDetail.DoesNotExist:  # V-27: specific exception
-            logger.error("Booking not found during check-in")
-            return HttpResponse('/visitorhostel/')
         except Exception as e:
             logger.error(f"Error in check_in: {e}")
+            messages.error(request, 'Failed to check in visitor.')
         return HttpResponse('/visitorhostel/')
     return HttpResponse('/visitorhostel/')
 
 
 @login_required(login_url='/accounts/login/')
+@role_required(['VhCaretaker', 'VhIncharge'])
 def check_out(request):
-    """V-10, V-25: Delegates to services.check_out_booking()."""
+    """V-05/V-06: Validated + role-restricted."""
+    _deprecation_warning('check_out')
     if request.method == 'POST':
+        validated, errors = _validate_post(request, CheckOutInputSerializer)
+        if errors:
+            messages.error(request, f'Invalid check-out data: {errors}')
+            return HttpResponseRedirect('/visitorhostel/')
         try:
             services.check_out_booking(
-                booking_id=request.POST.get('id'),
-                meal_bill=request.POST.get('mess_bill'),
-                room_bill=request.POST.get('room_bill'),
+                booking_id=validated['id'],
+                meal_bill=validated['mess_bill'],
+                room_bill=validated['room_bill'],
                 caretaker_user=request.user,
             )
         except Exception as e:
             logger.error(f"Error in check_out: {e}")
+            messages.error(request, 'Failed to check out.')
         return HttpResponseRedirect('/visitorhostel/')
     return HttpResponseRedirect('/visitorhostel/')
 
 
 @login_required(login_url='/accounts/login/')
+@role_required(['VhCaretaker', 'VhIncharge'])
 def record_meal(request):
-    """V-11, V-28: Delegates to services.record_meal()."""
+    """V-05/V-06: Validated + role-restricted."""
+    _deprecation_warning('record_meal')
     if request.method == "POST":
+        validated, errors = _validate_post(request, RecordMealInputSerializer)
+        if errors:
+            messages.error(request, f'Invalid meal data: {errors}')
+            return HttpResponseRedirect('/visitorhostel/')
         try:
             services.record_meal(
-                booking_id=request.POST.get('booking'),
-                visitor_id=request.POST.get('pk'),
-                m_tea=request.POST.get('m_tea'),
-                breakfast=request.POST.get('breakfast'),
-                lunch=request.POST.get('lunch'),
-                eve_tea=request.POST.get('eve_tea'),
-                dinner=request.POST.get('dinner'),
+                booking_id=validated['booking'],
+                visitor_id=validated['pk'],
+                m_tea=validated['m_tea'],
+                breakfast=validated['breakfast'],
+                lunch=validated['lunch'],
+                eve_tea=validated['eve_tea'],
+                dinner=validated['dinner'],
             )
         except Exception as e:
             logger.error(f"Error in record_meal: {e}")
+            messages.error(request, 'Failed to record meal.')
         return HttpResponseRedirect('/visitorhostel/')
     return HttpResponseRedirect('/visitorhostel/')
 
 
 @login_required(login_url='/accounts/login/')
 def bill_between_dates(request):
-    """Delegates to services.get_bill_report()."""
+    """V-05: Validates via BillDateRangeInputSerializer."""
+    _deprecation_warning('bill_between_dates')
     if request.method == 'POST':
-        date_1 = request.POST.get('start_date')
-        date_2 = request.POST.get('end_date')
+        validated, errors = _validate_post(request, BillDateRangeInputSerializer)
+        if errors:
+            messages.error(request, f'Invalid date range: {errors}')
+            return HttpResponseRedirect('/visitorhostel/')
         bills, meal_total, room_total, total_bill, individual_total = (
-            services.get_bill_report(date_1, date_2)
+            services.get_bill_report(validated['start_date'], validated['end_date'])
         )
         return render(request, "vhModule/booking_bw_dates.html", {
             'booking_bw_dates_length': bills,
@@ -332,11 +426,15 @@ def bill_between_dates(request):
 
 @login_required(login_url='/accounts/login/')
 def room_availability(request):
-    """V-41: Fixed typo (was room_availabity). Delegates to selectors."""
+    """V-05: Validates via RoomAvailabilityInputSerializer."""
+    _deprecation_warning('room_availability')
     if request.method == 'POST':
-        date_1 = request.POST.get('start_date')
-        date_2 = request.POST.get('end_date')
-        available_rooms = selectors.get_available_rooms(date_1, date_2)
+        validated, errors = _validate_post(request, RoomAvailabilityInputSerializer)
+        if errors:
+            messages.error(request, f'Invalid date range: {errors}')
+            return HttpResponseRedirect('/visitorhostel/')
+        available_rooms = selectors.get_available_rooms(
+            validated['start_date'], validated['end_date'])
         room_numbers = [room.room_number for room in available_rooms]
         return render(request, "vhModule/room-availability.html",
                       {'available_rooms': room_numbers})
@@ -344,72 +442,97 @@ def room_availability(request):
 
 
 @login_required(login_url='/accounts/login/')
+@role_required(['VhCaretaker', 'VhIncharge'])
 def add_to_inventory(request):
-    """V-20, V-24: Delegates to services.add_inventory_item()."""
+    """V-05/V-06: Validated + role-restricted."""
+    _deprecation_warning('add_to_inventory')
     if request.method == 'POST':
+        validated, errors = _validate_post(request, AddInventoryInputSerializer)
+        if errors:
+            messages.error(request, f'Invalid inventory data: {errors}')
+            return HttpResponseRedirect('/visitorhostel/')
         try:
             services.add_inventory_item(
-                item_name=request.POST.get('item_name'),
-                quantity=request.POST.get('quantity'),
-                cost=request.POST.get('cost'),
-                bill_number=request.POST.get('bill_number'),
-                consumable=request.POST.get('consumable', 'false'),
+                item_name=validated['item_name'],
+                quantity=validated['quantity'],
+                cost=validated['cost'],
+                bill_number=validated['bill_number'],
+                consumable=validated.get('consumable', 'false'),
             )
         except (ValueError, TypeError) as e:
             logger.error(f"Invalid inventory input: {e}")
+            messages.error(request, 'Failed to add inventory item.')
         return HttpResponseRedirect('/visitorhostel/')
     return HttpResponseRedirect('/visitorhostel/')
 
 
 @login_required(login_url='/accounts/login/')
+@role_required(['VhCaretaker', 'VhIncharge'])
 def update_inventory(request):
-    """V-21: Delegates to services.update_inventory_item()."""
+    """V-05/V-06: Validated + role-restricted."""
+    _deprecation_warning('update_inventory')
     if request.method == 'POST':
+        validated, errors = _validate_post(request, UpdateInventoryInputSerializer)
+        if errors:
+            messages.error(request, f'Invalid inventory data: {errors}')
+            return HttpResponseRedirect('/visitorhostel/')
         try:
             services.update_inventory_item(
-                item_id=request.POST.get('id'),
-                quantity=request.POST.get('quantity'),
+                item_id=validated['id'],
+                quantity=validated['quantity'],
             )
         except (ValueError, TypeError) as e:
             logger.error(f"Invalid inventory update input: {e}")
+            messages.error(request, 'Failed to update inventory.')
         return HttpResponseRedirect('/visitorhostel/')
     return HttpResponseRedirect('/visitorhostel/')
 
 
 @login_required(login_url='/accounts/login/')
+@role_required(['VhCaretaker', 'VhIncharge'])
 def edit_room_status(request):
-    """V-22: Delegates to services.edit_room_status()."""
+    """V-05/V-06: Validated + role-restricted."""
+    _deprecation_warning('edit_room_status')
     if request.method == 'POST':
+        validated, errors = _validate_post(request, EditRoomStatusInputSerializer)
+        if errors:
+            messages.error(request, f'Invalid room status data: {errors}')
+            return HttpResponseRedirect('/visitorhostel/')
         try:
             services.edit_room_status(
-                room_number=request.POST.get('room_number'),
-                room_status=request.POST.get('room_status'),
+                room_number=validated['room_number'],
+                room_status=validated['room_status'],
             )
         except Exception as e:
             logger.error(f"Error editing room status: {e}")
+            messages.error(request, 'Failed to update room status.')
         return HttpResponseRedirect('/visitorhostel/')
     return HttpResponseRedirect('/visitorhostel/')
 
 
 @login_required(login_url='/accounts/login/')
+@role_required(['VhCaretaker', 'VhIncharge'])
 def forward_booking(request):
-    """V-13: Delegates to services.forward_booking() with R-08."""
+    """V-05/V-06: Validated + role-restricted."""
+    _deprecation_warning('forward_booking')
     if request.method == 'POST':
+        validated, errors = _validate_post(
+            request, ForwardBookingInputSerializer,
+            list_fields={'rooms[]': 'rooms'},
+        )
+        if errors:
+            messages.error(request, f'Invalid forward data: {errors}')
+            return HttpResponseRedirect('/visitorhostel/')
         try:
             services.forward_booking(
-                booking_id=request.POST.get('id'),
-                modified_category=request.POST.get('modified_category'),
-                rooms_list=request.POST.getlist('rooms[]'),
-                remark=request.POST.get('remark', ''),
+                booking_id=validated['id'],
+                modified_category=validated['modified_category'],
+                rooms_list=validated['rooms'],
+                remark=validated.get('remark', ''),
                 requesting_user=request.user,
             )
         except Exception as e:
             logger.error(f"Error in forward_booking: {e}")
+            messages.error(request, 'Failed to forward booking.')
         return HttpResponseRedirect('/visitorhostel/')
     return HttpResponseRedirect('/visitorhostel/')
-
-
-# V-32: Removed broken bill_generation() view (referenced non-existent models)
-# V-16: Removed dead caretaker = 'shailesh' assignment
-# V-29/V-30: Removed all print() statements
-# V-31: Removed all commented-out code (~80 lines)

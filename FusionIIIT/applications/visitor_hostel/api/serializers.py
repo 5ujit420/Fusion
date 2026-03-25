@@ -1,11 +1,12 @@
 # api/serializers.py
 # Input/output validation for the visitor_hostel module.
-# Fixes: V-01, V-23–V-25
+# Fixes: V-09, V-10 — added missing input serializers.
 
 from rest_framework import serializers
 from ..models import (
     BookingDetail, VisitorDetail, RoomDetail, MealRecord,
     Bill, Inventory, InventoryBill,
+    RoomStatus,
 )
 
 
@@ -70,11 +71,10 @@ class InventoryBillSerializer(serializers.ModelSerializer):
 
 
 # ---------------------------------------------------------------------------
-# Input validation serializers  (V-23–V-25)
+# Input validation serializers
 # ---------------------------------------------------------------------------
 
 class BookingRequestInputSerializer(serializers.Serializer):
-    """V-23: Input validation for booking requests."""
     intender = serializers.IntegerField(required=True)
     category = serializers.ChoiceField(choices=['A', 'B', 'C', 'D'], required=True)
     number_of_people = serializers.IntegerField(required=True, min_value=1)
@@ -123,6 +123,12 @@ class CancelBookingInputSerializer(serializers.Serializer):
     charges = serializers.IntegerField(required=False, default=0)
 
 
+class CancelBookingRequestInputSerializer(serializers.Serializer):
+    """V-09: New — was missing, CancelBookingRequestView used raw request.data.get()."""
+    booking_id = serializers.IntegerField(required=True)
+    remark = serializers.CharField(required=False, allow_blank=True, default='')
+
+
 class RejectBookingInputSerializer(serializers.Serializer):
     booking_id = serializers.IntegerField(required=True)
     remark = serializers.CharField(required=False, allow_blank=True, default='')
@@ -137,7 +143,6 @@ class CheckInInputSerializer(serializers.Serializer):
 
 
 class CheckOutInputSerializer(serializers.Serializer):
-    """V-25: meal_bill and room_bill validated as integers."""
     id = serializers.IntegerField(required=True)
     mess_bill = serializers.IntegerField(required=True, min_value=0)
     room_bill = serializers.IntegerField(required=True, min_value=0)
@@ -154,7 +159,6 @@ class RecordMealInputSerializer(serializers.Serializer):
 
 
 class AddInventoryInputSerializer(serializers.Serializer):
-    """V-24: quantity and cost validated as integers."""
     item_name = serializers.CharField(required=True, max_length=20)
     bill_number = serializers.CharField(required=True, max_length=40)
     quantity = serializers.IntegerField(required=True, min_value=0)
@@ -175,11 +179,29 @@ class ForwardBookingInputSerializer(serializers.Serializer):
     remark = serializers.CharField(required=False, allow_blank=True, default='')
 
 
+class EditRoomStatusInputSerializer(serializers.Serializer):
+    """V-10: New — was missing, EditRoomStatusView used raw request.data.get()."""
+    room_number = serializers.CharField(required=True, max_length=4)
+    room_status = serializers.ChoiceField(
+        choices=[s.value for s in RoomStatus], required=True
+    )
+
+
 class RoomAvailabilityInputSerializer(serializers.Serializer):
     start_date = serializers.DateField(required=True)
     end_date = serializers.DateField(required=True)
+
+    def validate(self, data):
+        if data['start_date'] > data['end_date']:
+            raise serializers.ValidationError("start_date must be before or equal to end_date")
+        return data
 
 
 class BillDateRangeInputSerializer(serializers.Serializer):
     start_date = serializers.DateField(required=True)
     end_date = serializers.DateField(required=True)
+
+    def validate(self, data):
+        if data['start_date'] > data['end_date']:
+            raise serializers.ValidationError("start_date must be before or equal to end_date")
+        return data
