@@ -1,8 +1,7 @@
 from django.contrib import admin
-from .models import hidden_grades,authentication,grade
+from .models import HiddenGrade, Authentication, Grade, ResultAnnouncement
 
-# Register your models here.
-
-admin.site.register(hidden_grades)
-admin.site.register(authentication)
-admin.site.register(grade)
+admin.site.register(HiddenGrade)
+admin.site.register(Authentication)
+admin.site.register(Grade)
+admin.site.register(ResultAnnouncement)
