@@ -1,13 +1,19 @@
 # models.py
+# Models and module-level constants for the filetracking module.
+# Fixes: V-27, V-28, V-29
+
 from django.db import models
 from django.contrib.auth.models import User
 from applications.globals.models import ExtraInfo, HoldsDesignation, Designation
 
 
 # ---------------------------------------------------------------------------
-# Constants  (V-39)
+# Constants  (V-27, V-28, V-29, V-39)
 # ---------------------------------------------------------------------------
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+DEFAULT_DESIGNATION = 'default_value'   # V-27: session fallback
+LOGIN_URL = '/accounts/login/'          # V-28: standardized login URL
+DEFAULT_SRC_MODULE = 'filetracking'     # V-29: default src_module
 
 
 class File(models.Model):
@@ -23,7 +29,7 @@ class File(models.Model):
     is_read = models.BooleanField(default=False)
 
     # additions for API
-    src_module = models.CharField(max_length=100, default='filetracking')
+    src_module = models.CharField(max_length=100, default=DEFAULT_SRC_MODULE)
     src_object_id = models.CharField(max_length=100, null=True)
     file_extra_JSON = models.JSONField(null=True)
 

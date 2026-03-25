@@ -1,6 +1,8 @@
 # services.py
 # All business logic for the filetracking module.
-# Fixes: V-01, V-04–V-11, V-41, R-01, R-02, R-04, R-08
+# Fixes: V-03, V-04, V-08, V-09, V-10, V-11, V-12, V-13, V-14, V-15, V-16,
+#        V-18, V-19, V-23, V-24, V-30, V-32, V-34, V-35, V-37, V-38,
+#        R-01, R-04, R-07, R-08, R-09
 
 import io
 import os
@@ -9,26 +11,36 @@ import zipfile
 
 from django.core.exceptions import ValidationError
 from django.contrib.auth.models import User
+from django.shortcuts import get_object_or_404          # V-32: top-level import
+from django.utils.dateparse import parse_datetime
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
 from applications.globals.models import Designation, HoldsDesignation, ExtraInfo
-from notification.views import file_tracking_notif
+from notification.views import file_tracking_notif       # V-16: wrapped below
 
-from .models import File, Tracking, MAX_FILE_SIZE_BYTES
-from .api.serializers import FileSerializer, FileHeaderSerializer, TrackingSerializer
+from .models import File, Tracking, MAX_FILE_SIZE_BYTES, DEFAULT_SRC_MODULE
 from . import selectors
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Utilities  (R-03)
+# Notification wrapper  (V-16)
+# ---------------------------------------------------------------------------
+
+def _send_notification(sender_user, receiver_user, title):
+    """Thin wrapper for notification coupling. (V-16)"""
+    file_tracking_notif(sender_user, receiver_user, title)
+
+
+# ---------------------------------------------------------------------------
+# Utilities  (R-03, R-07)
 # ---------------------------------------------------------------------------
 
 def get_designation_display_name(holds_designation_obj):
-    """Extract the display name from a HoldsDesignation object (R-03)."""
+    """Extract the display name from a HoldsDesignation object."""
     return str(holds_designation_obj).split(" - ")[1]
 
 
@@ -55,33 +67,103 @@ def add_uploader_department_to_files_list(files):
 
 
 def validate_file_size(upload_file):
-    """Raise ValidationError if file exceeds MAX_FILE_SIZE_BYTES (V-39)."""
+    """Raise ValidationError if file exceeds MAX_FILE_SIZE_BYTES."""
     if upload_file and upload_file.size > MAX_FILE_SIZE_BYTES:
         raise ValidationError("File should not be greater than 10MB")
 
 
+def _resolve_sender_designation(design_id):
+    """Resolve (Designation, HoldsDesignation) from a design_id.
+    (R-07: unified designation resolution)"""
+    hd = selectors.get_holds_designation_by_id(design_id)
+    designation = selectors.get_designation_by_name(hd.designation.name)
+    return designation, hd
+
+
 # ---------------------------------------------------------------------------
-# File creation  (V-04, R-01 — consolidated save/send)
+# Session helpers  (R-04)
+# ---------------------------------------------------------------------------
+
+def get_session_designation(request):
+    """Read designation from session and return (designation_name, hd_obj).
+    (R-04: consolidated session pattern)"""
+    from .models import DEFAULT_DESIGNATION
+    designation_name = request.session.get('currentDesignationSelected', DEFAULT_DESIGNATION)
+    hd_obj = selectors.get_holds_designation_obj(request.user, designation_name)
+    return designation_name, hd_obj
+
+
+def get_designation_redirect_url_from_session(request, path_slug):
+    """Build redirect URL from session designation."""
+    _, hd_obj = get_session_designation(request)
+    return f'/filetracking/{path_slug}/{hd_obj.id}'
+
+
+# ---------------------------------------------------------------------------
+# Read-status helpers  (V-03, V-04, V-08, R-08)
+# ---------------------------------------------------------------------------
+
+def _set_file_read_status(file_id, is_read):
+    """Set is_read on a file. (R-08: unified archive/unarchive)"""
+    selectors.update_file_read_status(file_id, is_read)
+
+
+def mark_file_as_read(file_id):
+    """Mark file is_read=True. (V-03)"""
+    _set_file_read_status(file_id, True)
+
+
+def mark_tracking_as_read(file_or_id):
+    """Mark all tracking entries for a file as read. (V-04)"""
+    selectors.update_tracking_read_status(file_or_id, is_read=True)
+
+
+def archive_file_and_tracking(file_id):
+    """Archive a file and its tracking entries. (V-08)"""
+    _set_file_read_status(file_id, True)
+    selectors.update_tracking_read_status(file_id, is_read=True)
+
+
+# ---------------------------------------------------------------------------
+# Input validation  (V-23, V-24)
+# ---------------------------------------------------------------------------
+
+def _validate_compose_fields(title, description, design_id):
+    """Validate compose form fields. (V-23)"""
+    if not title or not title.strip():
+        raise ValidationError("Title is required")
+    if not design_id:
+        raise ValidationError("Designation is required")
+
+
+def _validate_send_fields(title, description, design_id, receiver, receive):
+    """Validate send form fields. (V-24)"""
+    _validate_compose_fields(title, description, design_id)
+    if not receiver or not receiver.strip():
+        raise ValidationError("Receiver username is required")
+    if not receive or not receive.strip():
+        raise ValidationError("Receiver designation is required")
+
+
+# ---------------------------------------------------------------------------
+# File creation  (V-19, R-07 — consolidated save/send)
 # ---------------------------------------------------------------------------
 
 def save_draft_file(uploader_user, title, description, design_id, upload_file, remarks=None):
     """
     Save a file as draft (no Tracking created, no notification sent).
-    Preserves original save-draft logic from views.py L58-87.
     """
+    _validate_compose_fields(title, description, design_id)     # V-23
     validate_file_size(upload_file)
 
     uploader = uploader_user.extrainfo
-    holds_des = selectors.get_holds_designation_by_id(design_id)
-    designation = selectors.get_designation_by_name(
-        HoldsDesignation.objects.select_related('designation').get(id=design_id).designation.name
-    )
+    designation, _ = _resolve_sender_designation(design_id)      # R-07
 
     extra_json = {
         'remarks': remarks if remarks is not None else '',
     }
 
-    file_obj = File.objects.create(
+    file_obj = selectors.create_file(                            # V-19
         uploader=uploader,
         description=description,
         subject=title,
@@ -96,18 +178,14 @@ def send_file(uploader_user, title, description, design_id, receiver_username,
               receiver_designation_name, upload_file, remarks=None):
     """
     Create a file and send it (create Tracking + notification).
-    Preserves original send logic from views.py L89-143. (R-01)
     """
+    _validate_send_fields(title, description, design_id, receiver_username, receiver_designation_name)  # V-24
     validate_file_size(upload_file)
 
     uploader = uploader_user.extrainfo
-    designation = Designation.objects.get(
-        id=HoldsDesignation.objects.select_related(
-            'user', 'working', 'designation'
-        ).get(id=design_id).designation_id
-    )
+    designation, current_design = _resolve_sender_designation(design_id)  # R-07
 
-    file_obj = File.objects.create(
+    file_obj = selectors.create_file(                            # V-19
         uploader=uploader,
         description=description,
         subject=title,
@@ -116,14 +194,10 @@ def send_file(uploader_user, title, description, design_id, receiver_username,
     )
 
     current_id = uploader_user.extrainfo
-    current_design = HoldsDesignation.objects.select_related(
-        'user', 'working', 'designation'
-    ).get(id=design_id)
+    receiver_id = selectors.get_user_by_username(receiver_username)      # V-18
+    receive_design = selectors.get_designation_by_name(receiver_designation_name)  # V-18
 
-    receiver_id = User.objects.get(username=receiver_username)
-    receive_design = Designation.objects.get(name=receiver_designation_name)
-
-    Tracking.objects.create(
+    selectors.create_tracking(                                   # V-19
         file_id=file_obj,
         current_id=current_id,
         current_design=current_design,
@@ -133,31 +207,28 @@ def send_file(uploader_user, title, description, design_id, receiver_username,
         upload_file=upload_file,
     )
 
-    file_tracking_notif(uploader_user, receiver_id, title)
+    _send_notification(uploader_user, receiver_id, title)        # V-16
     return file_obj
 
 
 # ---------------------------------------------------------------------------
-# SDK-compatible file creation  (V-12, V-41)
+# SDK-compatible file creation  (V-18, V-19)
 # ---------------------------------------------------------------------------
 
 def create_file_via_sdk(uploader, uploader_designation, receiver, receiver_designation,
-                        subject="", description="", src_module="filetracking",
+                        subject="", description="", src_module=DEFAULT_SRC_MODULE,
                         src_object_id="", file_extra_JSON=None, attached_file=None):
-    """
-    Create a file + tracking entry (SDK create_file equivalent).
-    Preserves exact logic from sdk/methods.py L10-73.
-    """
+    """Create a file + tracking entry (SDK create_file equivalent)."""
     if file_extra_JSON is None:
         file_extra_JSON = {}
 
-    uploader_user_obj = selectors.get_user_by_username(uploader)
+    uploader_user_obj = selectors.get_user_by_username(uploader)         # V-18
     uploader_extrainfo_obj = selectors.get_extrainfo_by_username(uploader)
     uploader_designation_obj = selectors.get_designation_by_name(uploader_designation)
     receiver_obj = selectors.get_user_by_username(receiver)
     receiver_designation_obj = selectors.get_designation_by_name(receiver_designation)
 
-    new_file = File.objects.create(
+    new_file = selectors.create_file(                                    # V-19
         uploader=uploader_extrainfo_obj,
         subject=subject,
         description=description,
@@ -174,7 +245,7 @@ def create_file_via_sdk(uploader, uploader_designation, receiver, receiver_desig
         uploader_user_obj, uploader_designation_obj
     )
 
-    new_tracking = Tracking.objects.create(
+    new_tracking = selectors.create_tracking(                            # V-19
         file_id=new_file,
         current_id=uploader_extrainfo_obj,
         current_design=uploader_holdsdesignation_obj,
@@ -190,19 +261,16 @@ def create_file_via_sdk(uploader, uploader_designation, receiver, receiver_desig
     return new_file.id
 
 
-def create_draft_via_sdk(uploader, uploader_designation, src_module="filetracking",
+def create_draft_via_sdk(uploader, uploader_designation, src_module=DEFAULT_SRC_MODULE,
                          src_object_id="", file_extra_JSON=None, attached_file=None):
-    """
-    Create a draft (no Tracking). SDK create_draft equivalent.
-    Preserves logic from sdk/methods.py L205-229.
-    """
+    """Create a draft (no Tracking). SDK create_draft equivalent."""
     if file_extra_JSON is None:
         file_extra_JSON = {}
 
     uploader_extrainfo_obj = selectors.get_extrainfo_by_username(uploader)
     uploader_designation_obj = selectors.get_designation_by_name(uploader_designation)
 
-    new_file = File.objects.create(
+    new_file = selectors.create_file(                                    # V-19
         uploader=uploader_extrainfo_obj,
         designation=uploader_designation_obj,
         src_module=src_module,
@@ -214,24 +282,35 @@ def create_draft_via_sdk(uploader, uploader_designation, src_module="filetrackin
 
 
 # ---------------------------------------------------------------------------
-# View file  (V-13)
+# View file  (V-38: decoupled from serializers)
 # ---------------------------------------------------------------------------
 
 def view_file_details(file_id):
-    """Return serialized file details. Preserves sdk/methods.py L76-86."""
-    requested_file = selectors.get_file_by_id(file_id)
-    serializer = FileSerializer(requested_file)
-    return serializer.data
+    """Return file details as a dict. (V-38: no serializer import)"""
+    f = selectors.get_file_by_id(file_id)
+    return {
+        'id': f.id,
+        'uploader': f.uploader_id,
+        'designation': f.designation_id,
+        'subject': f.subject,
+        'description': f.description,
+        'upload_date': str(f.upload_date) if f.upload_date else None,
+        'upload_file': f.upload_file.url if f.upload_file else None,
+        'is_read': f.is_read,
+        'src_module': f.src_module,
+        'src_object_id': f.src_object_id,
+        'file_extra_JSON': f.file_extra_JSON,
+    }
 
 
 def delete_file(file_id):
-    """Delete a file. Preserves sdk/methods.py L89-97."""
-    File.objects.filter(id=file_id).delete()
+    """Delete a file."""
+    selectors.delete_file_by_id(file_id)                                 # V-19
     return True
 
 
 def delete_file_with_auth(file_id, requesting_user):
-    """Delete a file with ownership check (V-23)."""
+    """Delete a file with ownership check."""
     file_obj = selectors.get_file_by_id(file_id)
     if file_obj.uploader.user != requesting_user:
         raise ValidationError("Not authorized to delete this file")
@@ -240,14 +319,53 @@ def delete_file_with_auth(file_id, requesting_user):
 
 
 # ---------------------------------------------------------------------------
-# Inbox / Outbox  (V-05, V-06, V-14, V-15)
+# File header serialization  (V-38: inline without serializer import)
+# ---------------------------------------------------------------------------
+
+def _serialize_file_header(file_obj):
+    """Serialize a single File to a header dict (excludes upload_file, is_read)."""
+    return {
+        'id': file_obj.id,
+        'uploader': file_obj.uploader_id,
+        'designation': file_obj.designation_id,
+        'subject': file_obj.subject,
+        'description': file_obj.description,
+        'upload_date': str(file_obj.upload_date) if file_obj.upload_date else None,
+        'src_module': file_obj.src_module,
+        'src_object_id': file_obj.src_object_id,
+        'file_extra_JSON': file_obj.file_extra_JSON,
+    }
+
+
+def _serialize_file_headers(file_list):
+    """Serialize a list of File objects to header dicts."""
+    return [_serialize_file_header(f) for f in file_list]
+
+
+def _serialize_tracking(tracking_obj):
+    """Serialize a single Tracking to a dict."""
+    return {
+        'id': tracking_obj.id,
+        'file_id': tracking_obj.file_id_id,
+        'current_id': tracking_obj.current_id_id,
+        'current_design': tracking_obj.current_design_id,
+        'receiver_id': tracking_obj.receiver_id_id,
+        'receive_design': tracking_obj.receive_design_id,
+        'receive_date': str(tracking_obj.receive_date) if tracking_obj.receive_date else None,
+        'forward_date': str(tracking_obj.forward_date) if tracking_obj.forward_date else None,
+        'remarks': tracking_obj.remarks,
+        'upload_file': tracking_obj.upload_file.url if tracking_obj.upload_file else None,
+        'is_read': tracking_obj.is_read,
+        'tracking_extra_JSON': tracking_obj.tracking_extra_JSON,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Inbox / Outbox  (V-38: decoupled from serializers)
 # ---------------------------------------------------------------------------
 
 def view_inbox(username, designation, src_module):
-    """
-    Return inbox files for a user+designation.
-    Preserves exact logic from sdk/methods.py L101-123.
-    """
+    """Return inbox files for a user+designation."""
     user_designation = selectors.get_designation_by_name(designation)
     recipient_object = selectors.get_user_by_username(username)
     received_files_tracking = selectors.get_tracking_by_receiver(
@@ -255,7 +373,7 @@ def view_inbox(username, designation, src_module):
     )
     received_files = [tracking.file_id for tracking in received_files_tracking]
     received_files_unique = unique_list(received_files)
-    received_files_serialized = list(FileHeaderSerializer(received_files_unique, many=True).data)
+    received_files_serialized = _serialize_file_headers(received_files_unique)
 
     for f in received_files_serialized:
         sender = selectors.get_last_file_sender(f['id'])
@@ -267,10 +385,7 @@ def view_inbox(username, designation, src_module):
 
 
 def view_outbox(username, designation, src_module):
-    """
-    Return outbox files for a user+designation.
-    Preserves exact logic from sdk/methods.py L126-146.
-    """
+    """Return outbox files for a user+designation."""
     user_designation = selectors.get_designation_by_name(designation)
     user_object = selectors.get_user_by_username(username)
     user_holds_designation = selectors.get_holds_designation(user_object, user_designation)
@@ -280,19 +395,90 @@ def view_outbox(username, designation, src_module):
     )
     sent_files = [tracking.file_id for tracking in sent_files_tracking]
     sent_files_unique = unique_list(sent_files)
-    sent_files_serialized = FileHeaderSerializer(sent_files_unique, many=True)
-    return sent_files_serialized.data
+    return _serialize_file_headers(sent_files_unique)
 
 
 # ---------------------------------------------------------------------------
-# Archive  (V-10, V-20, R-08)
+# Enrichment functions  (V-09, V-10, V-11, V-14 — moved from views)
+# ---------------------------------------------------------------------------
+
+def enrich_draft_files(draft_files):
+    """Enrich draft file dicts with parsed dates and uploader info. (V-09)"""
+    for f in draft_files:
+        f['upload_date'] = parse_datetime(f['upload_date'])
+        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
+    return add_uploader_department_to_files_list(draft_files)
+
+
+def enrich_outbox_files(outward_files, user_hd):
+    """Enrich outbox file dicts with forwarding info. (V-10)"""
+    sender_extrainfo = selectors.get_extrainfo_by_username(user_hd.user)
+    for f in outward_files:
+        last_forw = selectors.get_last_forw_tracking(
+            file_id=f['id'],
+            sender_extrainfo=sender_extrainfo,
+            sender_holds_designation=user_hd,
+        )
+        f['sent_to_user'] = last_forw.receiver_id if last_forw else None
+        f['sent_to_design'] = last_forw.receive_design if last_forw else None
+        f['last_sent_date'] = last_forw.forward_date if last_forw else None
+        f['upload_date'] = parse_datetime(f['upload_date'])
+        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
+    return outward_files
+
+
+def enrich_inbox_files(inward_files, user_hd):
+    """Enrich inbox file dicts with receive info. (V-11)"""
+    for f in inward_files:
+        f['upload_date'] = parse_datetime(f['upload_date'])
+        last_recv = selectors.get_last_recv_tracking(
+            file_id=f['id'],
+            receiver_user=user_hd.user,
+            receive_design=user_hd.designation,
+        )
+        f['receive_date'] = last_recv.receive_date if last_recv else None
+        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
+        current_owner = selectors.get_current_file_owner(f['id'])
+        f['is_forwarded'] = (str(current_owner.username) != str(user_hd.user)) if current_owner else True
+    return add_uploader_department_to_files_list(inward_files)
+
+
+def enrich_archive_files(archive_files):
+    """Enrich archive file dicts with designation and uploader info. (V-14)"""
+    for f in archive_files:
+        f['upload_date'] = parse_datetime(f['upload_date'])
+        f['designation'] = selectors.get_designation_by_id(f['designation'])   # V-05
+        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
+    return add_uploader_department_to_files_list(archive_files)
+
+
+# ---------------------------------------------------------------------------
+# Search filtering  (V-12, V-13, R-01)
+# ---------------------------------------------------------------------------
+
+def filter_files_by_search(files, subject_query='', sent_to_query='', date_query=''):
+    """Filter a file list by subject, sent_to, and date.
+    (V-12, V-13, R-01: consolidated from outbox_view/inbox_view)"""
+    from datetime import datetime
+    if subject_query:
+        files = [f for f in files if subject_query.lower() in (f.get('subject') or '').lower()]
+    if sent_to_query:
+        files = [f for f in files if f.get('sent_to_user') and sent_to_query.lower() in f['sent_to_user'].username.lower()]
+    if date_query:
+        try:
+            search_date = datetime.strptime(date_query, '%Y-%m-%d')
+            files = [f for f in files if f.get('last_sent_date') and f['last_sent_date'].date() == search_date.date()]
+        except ValueError:
+            files = []
+    return files
+
+
+# ---------------------------------------------------------------------------
+# Archive  (R-08)
 # ---------------------------------------------------------------------------
 
 def view_archived(username, designation, src_module):
-    """
-    Return archived files for a user+designation.
-    Preserves logic from sdk/methods.py L150-179.
-    """
+    """Return archived files for a user+designation."""
     user_designation = selectors.get_designation_by_name(designation)
     user_object = selectors.get_user_by_username(username)
     received_archived_tracking = selectors.get_tracking_by_receiver(
@@ -308,180 +494,165 @@ def view_archived(username, designation, src_module):
     archived_tracking = received_archived_tracking | sent_archived_tracking
     archived_files = [tracking.file_id for tracking in archived_tracking]
     archived_files_unique = unique_list(archived_files)
-    archived_files_serialized = FileHeaderSerializer(archived_files_unique, many=True)
-    return archived_files_serialized.data
+    return _serialize_file_headers(archived_files_unique)
 
 
 def archive_file_sdk(file_id):
-    """Archive a file (set is_read=True). Preserves sdk/methods.py L183-191."""
-    File.objects.filter(id=file_id).update(is_read=True)
+    """Archive a file (set is_read=True). (R-08)"""
+    _set_file_read_status(file_id, True)
     return True
 
 
 def unarchive_file(file_id):
-    """Unarchive a file (set is_read=False). Single implementation (R-08)."""
-    File.objects.filter(id=file_id).update(is_read=False)
+    """Unarchive a file (set is_read=False). (R-08)"""
+    _set_file_read_status(file_id, False)
     return True
 
 
 def archive_file_with_auth(file_id, requesting_user):
-    """
-    Archive a file after ownership check (V-10).
-    Preserves logic from views.py L494-513.
-    """
-    from django.shortcuts import get_object_or_404
-    file_obj = get_object_or_404(File, id=file_id)
+    """Archive a file after ownership check."""
+    file_obj = get_object_or_404(File, id=file_id)              # V-32: top-level import
     current_owner = selectors.get_current_file_owner(file_id)
     file_uploader_user = file_obj.uploader.user
 
     if current_owner == requesting_user and file_uploader_user == requesting_user:
-        file_obj.is_read = True
-        file_obj.save()
+        _set_file_read_status(file_id, True)                     # R-08
         return True, 'File Archived'
     return False, 'Unauthorized access'
 
 
 # ---------------------------------------------------------------------------
-# View Drafts  (V-18, V-19)
+# View Drafts
 # ---------------------------------------------------------------------------
 
 def view_drafts(username, designation, src_module):
-    """
-    Return draft files for a user+designation.
-    Preserves logic from sdk/methods.py L232-241.
-    """
+    """Return draft files for a user+designation."""
     user_designation = selectors.get_designation_by_name(designation)
     user_extrainfo = selectors.get_extrainfo_by_username(username)
     draft_files = selectors.get_draft_files(user_extrainfo, user_designation, src_module)
-    draft_files_serialized = FileHeaderSerializer(draft_files, many=True)
-    return draft_files_serialized.data
+    return _serialize_file_headers(draft_files)
 
 
 # ---------------------------------------------------------------------------
-# Forward file  (V-07, V-17, R-02)
+# Forward file  (R-09: unified core)
 # ---------------------------------------------------------------------------
+
+def _forward_file_core(file_id_or_obj, sender_extrainfo, sender_holds_designation,
+                       receiver_user, receiver_designation, remarks="",
+                       upload_file=None, extra_json=None, send_notif_user=None):
+    """Core forwarding logic shared by SDK and web paths.
+    (R-09: unified forward_file + forward_file_from_view)"""
+    tracking = selectors.create_tracking(                        # V-19, V-37
+        file_id=file_id_or_obj if isinstance(file_id_or_obj, File) else selectors.get_file_by_id(file_id_or_obj),
+        current_id=sender_extrainfo,
+        current_design=sender_holds_designation,
+        receiver_id=receiver_user,
+        receive_design=receiver_designation,
+        remarks=remarks,
+        upload_file=upload_file,
+        tracking_extra_JSON=extra_json or {},
+    )
+
+    if send_notif_user is not None:
+        file_obj = file_id_or_obj if isinstance(file_id_or_obj, File) else selectors.get_file_by_id(file_id_or_obj)
+        _send_notification(send_notif_user, receiver_user, file_obj.subject)
+
+    return tracking
+
 
 def forward_file(file_id, receiver, receiver_designation, file_extra_JSON,
                  remarks="", file_attachment=None):
-    """
-    Forward a file to a new recipient.
-    Preserves exact logic from sdk/methods.py L245-284.
-    """
-    current_owner = selectors.get_current_file_owner(file_id)
-    current_owner_designation = selectors.get_current_file_owner_designation(file_id)
-    current_owner_extra_info = ExtraInfo.objects.get(user=current_owner)
-    current_owner_holds_designation = HoldsDesignation.objects.get(
-        user=current_owner, designation=current_owner_designation
+    """Forward a file to a new recipient (SDK path). (R-09)"""
+    current_owner, current_owner_designation = selectors.get_current_file_owner_info(file_id)  # R-06
+    current_owner_extra_info = selectors.get_extrainfo_by_user(current_owner)    # V-18
+    current_owner_holds_designation = selectors.get_holds_designation(
+        current_owner, current_owner_designation
+    )                                                                            # V-18
+    receiver_obj = selectors.get_user_by_username(receiver)                      # V-18
+    receiver_designation_obj = selectors.get_designation_by_name(receiver_designation)  # V-18
+
+    tracking = _forward_file_core(
+        file_id_or_obj=file_id,
+        sender_extrainfo=current_owner_extra_info,
+        sender_holds_designation=current_owner_holds_designation,
+        receiver_user=receiver_obj,
+        receiver_designation=receiver_designation_obj,
+        remarks=remarks,
+        upload_file=file_attachment,
+        extra_json=file_extra_JSON,
     )
-    receiver_obj = User.objects.get(username=receiver)
-    receiver_designation_obj = Designation.objects.get(name=receiver_designation)
-
-    tracking_data = {
-        'file_id': file_id,
-        'current_id': current_owner_extra_info.id,
-        'current_design': current_owner_holds_designation.id,
-        'receiver_id': receiver_obj.id,
-        'receive_design': receiver_designation_obj.id,
-        'tracking_extra_JSON': file_extra_JSON,
-        'remarks': remarks,
-    }
-    if file_attachment is not None:
-        tracking_data['upload_file'] = file_attachment
-
-    tracking_entry = TrackingSerializer(data=tracking_data)
-    if tracking_entry.is_valid():
-        tracking_entry.save()
-        return tracking_entry.instance.id
-    else:
-        raise ValidationError('forward data is incomplete')
+    return tracking.id
 
 
 def forward_file_from_view(file_obj, requesting_user, sender_design_id,
                            receiver_username, receiver_designation_name,
                            upload_file, remarks):
-    """
-    Forward a file from the web view (V-07, R-02).
-    Common logic shared by forward() and edit_draft_view().
-    """
+    """Forward a file from the web view. (R-09)"""
     current_id = requesting_user.extrainfo
-    current_design = HoldsDesignation.objects.select_related(
-        'user', 'working', 'designation'
-    ).get(id=sender_design_id)
+    current_design = selectors.get_holds_designation_by_id(sender_design_id)     # V-18
+    receiver_id = selectors.get_user_by_username(receiver_username)              # V-18
+    receive_design = selectors.get_designation_by_name(receiver_designation_name) # V-18
 
-    receiver_id = User.objects.get(username=receiver_username)
-    receive_design = Designation.objects.get(name=receiver_designation_name)
-
-    Tracking.objects.create(
-        file_id=file_obj,
-        current_id=current_id,
-        current_design=current_design,
-        receive_design=receive_design,
-        receiver_id=receiver_id,
+    _forward_file_core(
+        file_id_or_obj=file_obj,
+        sender_extrainfo=current_id,
+        sender_holds_designation=current_design,
+        receiver_user=receiver_id,
+        receiver_designation=receive_design,
         remarks=remarks,
         upload_file=upload_file,
+        send_notif_user=requesting_user,
     )
-
-    file_tracking_notif(requesting_user, receiver_id, file_obj.subject)
     return receiver_id
 
 
 # ---------------------------------------------------------------------------
-# View History  (V-16)
+# View History  (V-35)
 # ---------------------------------------------------------------------------
 
 def view_history(file_id):
-    """
-    Return tracking history for a file.
-    Preserves sdk/methods.py L287-295.
-    """
+    """Return tracking history for a file."""
     tracking_history = selectors.get_tracking_history(file_id)
-    tracking_history_serialized = TrackingSerializer(tracking_history, many=True)
-    return tracking_history_serialized.data
+    return [_serialize_tracking(t) for t in tracking_history]
 
 
 def view_history_enriched(file_id):
-    """
-    Return enriched tracking history with username/designation names (V-16).
-    Preserves api/views.py ViewHistoryView L152-161.
-    """
-    histories = view_history(file_id)
+    """Return enriched tracking history with username/designation names (V-35)."""
+    tracking_entries = selectors.get_tracking_history(file_id)  # V-35: already select_related
     tracking_array = []
-    for history in histories:
-        temp_obj = history.copy()
-        temp_obj['receiver_id'] = User.objects.get(id=history['receiver_id']).username
-        temp_obj['receive_design'] = Designation.objects.get(id=history['receive_design']).name
+    for t in tracking_entries:
+        temp_obj = _serialize_tracking(t)
+        temp_obj['receiver_id'] = t.receiver_id.username        # V-35: no extra query
+        temp_obj['receive_design'] = t.receive_design.name      # V-35: no extra query
         tracking_array.append(temp_obj)
     return tracking_array
 
 
 # ---------------------------------------------------------------------------
-# Get designations  (for both web and API views)
+# Get designations
 # ---------------------------------------------------------------------------
 
 def get_designations(username):
-    """Return list of designation names for a user. Preserves sdk/methods.py L341-348."""
+    """Return list of designation names for a user."""
     return selectors.get_designation_names_for_user(username)
 
 
 # ---------------------------------------------------------------------------
-# Edit draft  (V-08, R-02)
+# Edit draft  (R-09)
 # ---------------------------------------------------------------------------
 
 def edit_and_send_draft(file_obj, track_qs, requesting_user, sender_design_id,
                         receiver_username, receiver_designation_name,
                         upload_file, remarks, subject=None, description=None):
-    """
-    Edit a draft's metadata and send it.
-    Preserves views.py L911-977.
-    """
+    """Edit a draft's metadata and send it."""
     if subject is not None:
         file_obj.subject = subject
     if description is not None:
         file_obj.description = description
     file_obj.save()
-    track_qs.update(is_read=True)
+    mark_tracking_as_read(file_obj)                              # V-04
 
-    # Reuse forward logic (R-02)
+    # Reuse forward logic (R-09)
     if upload_file is None and file_obj.upload_file:
         upload_file = file_obj.upload_file
 
@@ -494,19 +665,15 @@ def edit_and_send_draft(file_obj, track_qs, requesting_user, sender_design_id,
 
 
 # ---------------------------------------------------------------------------
-# File view context  (V-11)
+# File view context
 # ---------------------------------------------------------------------------
 
 def get_file_view_permissions(file_id, requesting_user):
-    """
-    Determine forward_enable and archive_enable flags.
-    Preserves views.py L469-480.
-    """
-    file_obj = File.objects.get(id=file_id)
-    current_owner = selectors.get_current_file_owner(file_id)
+    """Determine forward_enable and archive_enable flags."""
+    file_obj = selectors.get_file_by_id(file_id)                # V-19
+    current_owner, last_receiver_designation = selectors.get_current_file_owner_info(file_id)  # R-06
     file_uploader = file_obj.uploader.user
 
-    last_receiver_designation = selectors.get_current_file_owner_designation(file_id)
     last_receiver_designation_name = last_receiver_designation.name if last_receiver_designation else ''
 
     forward_enable = False
@@ -524,18 +691,14 @@ def get_file_view_permissions(file_id, requesting_user):
 
 
 # ---------------------------------------------------------------------------
-# Download file  (V-09)
+# Download file
 # ---------------------------------------------------------------------------
 
 def generate_file_download(file_id):
-    """
-    Generate a ZIP file containing the PDF notesheet and all attachments.
-    Preserves views.py L1014-1073.
-    Returns (zip_data_bytes, output_filename).
-    """
-    from django.shortcuts import get_object_or_404
-    file_obj = get_object_or_404(File, id=file_id)
-    track = selectors.get_tracking_for_file_by_id(file_id)
+    """Generate a ZIP file containing the PDF notesheet and all attachments.
+    Returns (zip_data_bytes, output_filename)."""
+    file_obj = get_object_or_404(File, id=file_id)              # V-32
+    track = selectors.get_tracking_for_file(file_id)             # R-05
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
@@ -583,23 +746,3 @@ def generate_file_download(file_id):
     zip_buffer.close()
 
     return zip_data, output_filename
-
-
-# ---------------------------------------------------------------------------
-# Redirect helper  (R-04)
-# ---------------------------------------------------------------------------
-
-def get_designation_redirect_url(requesting_user, path_slug):
-    """
-    Build a redirect URL for designation-based pages (R-04).
-    Consolidates draft_design, outward, inward, archive_design.
-    """
-    dropdown_design = None  # Must be passed from session
-    raise NotImplementedError("Use get_designation_redirect_url_from_session instead")
-
-
-def get_designation_redirect_url_from_session(request, path_slug):
-    """Build redirect URL from session designation."""
-    dropdown_design = request.session.get('currentDesignationSelected', 'default_value')
-    hd_obj = selectors.get_holds_designation_obj(request.user, dropdown_design)
-    return f'/filetracking/{path_slug}/{hd_obj.id}'

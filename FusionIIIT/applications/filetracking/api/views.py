@@ -1,257 +1,268 @@
 # api/views.py
-# Thin API views for the filetracking module.
-# All logic delegated to services.py, all queries to selectors.py.
-# Fixes: V-12–V-21, V-27, V-28, V-32–V-34
+# Thin DRF API views for the filetracking module.
+# Fixes: V-25, V-26, V-38
 
 import logging
-
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework.authentication import TokenAuthentication
 
-from ..models import File, Tracking, MAX_FILE_SIZE_BYTES
+from .. import services
 from .serializers import (
     FileCreateInputSerializer,
     DraftCreateInputSerializer,
     ForwardFileInputSerializer,
     InboxQuerySerializer,
     OutboxQuerySerializer,
+    DraftQuerySerializer,      # V-25
+    ArchiveQuerySerializer,     # V-26
     ArchiveInputSerializer,
 )
-from .. import services
 
-# V-27: Fix logger import (was `from venv import logger`)
 logger = logging.getLogger(__name__)
 
 
 class CreateFileView(APIView):
-    """V-12: Delegates to services.create_file_via_sdk()."""
+    """POST api/file/ — Create and send a new file."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         serializer = FileCreateInputSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
-            uploaded_file = request.FILES.get('file')
+            data = serializer.validated_data
             file_id = services.create_file_via_sdk(
-                uploader=request.user.username,
-                uploader_designation=serializer.validated_data['designation'],
-                receiver=serializer.validated_data['receiver_username'],
-                receiver_designation=serializer.validated_data['receiver_designation'],
-                subject=serializer.validated_data['subject'],
-                description=serializer.validated_data.get('description', ''),
-                attached_file=uploaded_file,
+                uploader=data['uploader'],
+                uploader_designation=data['uploader_designation'],
+                receiver=data['receiver'],
+                receiver_designation=data['receiver_designation'],
+                subject=data.get('subject', ''),
+                description=data.get('description', ''),
+                src_module=data.get('src_module', 'filetracking'),
+                src_object_id=data.get('src_object_id', ''),
+                file_extra_JSON=data.get('file_extra_JSON', {}),
+                attached_file=data.get('file_attachment'),
             )
             return Response({'file_id': file_id}, status=status.HTTP_201_CREATED)
         except Exception as e:
-            logger.error(f"Error creating file: {e}")
+            logger.exception("CreateFileView error")
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ViewFileView(APIView):
-    """V-13: Delegates to services.view_file_details() and services.delete_file()."""
+    """GET/DELETE api/file/<file_id>/ — View or delete a file."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, file_id):
         try:
-            file_details = services.view_file_details(int(file_id))
-            return Response(file_details, status=status.HTTP_200_OK)
-        except ValueError:
-            return Response({'error': 'Invalid file ID format.'}, status=status.HTTP_400_BAD_REQUEST)
-        except File.DoesNotExist:
-            return Response({'error': 'File not found.'}, status=status.HTTP_404_NOT_FOUND)
+            file_data = services.view_file_details(file_id)
+            return Response({'file': file_data})
         except Exception as e:
-            logger.error(f"Error viewing file {file_id}: {e}")
+            logger.exception("ViewFileView.get error")
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, file_id):
-        """V-28: Fixed bare `return` → proper error response."""
         try:
-            success = services.delete_file(int(file_id))
-            if success:
-                return Response({'message': 'File deleted successfully'},
-                                status=status.HTTP_204_NO_CONTENT)
-            else:
-                return Response({'error': 'Failed to delete file'},
-                                status=status.HTTP_400_BAD_REQUEST)
-        except ValueError:
-            return Response({'error': 'Invalid file ID format'},
-                            status=status.HTTP_400_BAD_REQUEST)
-        except File.DoesNotExist:
-            return Response({'error': 'File not found'},
-                            status=status.HTTP_404_NOT_FOUND)
+            services.delete_file_with_auth(file_id, request.user)
+            return Response({'message': 'File deleted successfully'})
         except Exception as e:
-            logger.error(f"Unexpected error in DeleteFileView: {e}")
-            return Response({'error': 'An internal server error occurred'},
-                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            logger.exception("ViewFileView.delete error")
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ViewInboxView(APIView):
-    """V-14, V-26: Delegates to services.view_inbox() with validation."""
+    """GET api/inbox/ — List inbox files."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         serializer = InboxQuerySerializer(data=request.query_params)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        inbox_files = services.view_inbox(
-            username=serializer.validated_data['username'],
-            designation=serializer.validated_data.get('designation', ''),
-            src_module=serializer.validated_data['src_module'],
-        )
-        return Response(inbox_files)
+            return Response({'error': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            data = serializer.validated_data
+            inbox_files = services.view_inbox(
+                username=data['username'],
+                designation=data['designation'],
+                src_module=data.get('src_module', 'filetracking'),
+            )
+            return Response({'inbox': inbox_files})
+        except Exception as e:
+            logger.exception("ViewInboxView error")
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ViewOutboxView(APIView):
-    """V-15: Delegates to services.view_outbox() with validation."""
+    """GET api/outbox/ — List outbox files."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         serializer = OutboxQuerySerializer(data=request.query_params)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        outbox_files = services.view_outbox(
-            username=serializer.validated_data['username'],
-            designation=serializer.validated_data.get('designation', ''),
-            src_module=serializer.validated_data['src_module'],
-        )
-        return Response(outbox_files)
+            return Response({'error': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            data = serializer.validated_data
+            outbox_files = services.view_outbox(
+                username=data['username'],
+                designation=data['designation'],
+                src_module=data.get('src_module', 'filetracking'),
+            )
+            return Response({'outbox': outbox_files})
+        except Exception as e:
+            logger.exception("ViewOutboxView error")
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ViewHistoryView(APIView):
-    """V-16: Delegates to services.view_history_enriched()."""
+    """GET api/history/<file_id>/ — View tracking history."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, file_id):
         try:
-            tracking_array = services.view_history_enriched(file_id)
-            return Response(tracking_array)
-        except Tracking.DoesNotExist:
-            return Response({'error': f'File with ID {file_id} not found.'}, status=status.HTTP_404_NOT_FOUND)
+            history = services.view_history(int(file_id))
+            return Response({'history': history})
+        except (ValueError, TypeError):
+            return Response({'error': 'Invalid file_id'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            logger.error(f"An unexpected error occurred: {e}")
-            return Response({'error': 'Internal server error.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            logger.exception("ViewHistoryView error")
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ForwardFileView(APIView):
-    """V-17: Delegates to services.forward_file() with serializer validation."""
+    """POST api/forwardfile/<file_id>/ — Forward a file."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, file_id):
         serializer = ForwardFileInputSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            file_attachment = request.FILES.get('file_attachment')
-            if file_attachment and file_attachment.size > MAX_FILE_SIZE_BYTES:
-                return Response({'error': 'File size exceeds limit (10 MB)'},
-                                status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
-            new_tracking_id = services.forward_file(
-                int(file_id),
-                serializer.validated_data['receiver'],
-                serializer.validated_data['receiver_designation'],
-                request.data.get('file_extra_JSON', {}),
-                serializer.validated_data.get('remarks', ''),
-                file_attachment,
+        try:
+            data = serializer.validated_data
+            tracking_id = services.forward_file(
+                file_id=file_id,
+                receiver=data['receiver'],
+                receiver_designation=data['receiver_designation'],
+                file_extra_JSON=data.get('file_extra_JSON', {}),
+                remarks=data.get('remarks', ''),
+                file_attachment=data.get('file_attachment'),
             )
-            return Response({'tracking_id': new_tracking_id}, status=status.HTTP_201_CREATED)
+            return Response({'tracking_id': tracking_id}, status=status.HTTP_201_CREATED)
         except Exception as e:
-            logger.error(f"Error forwarding file {file_id}: {str(e)}")
+            logger.exception("ForwardFileView error")
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class DraftFileView(APIView):
+    """GET api/draft/ — List draft files. (V-25: uses DraftQuerySerializer)"""
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        serializer = DraftQuerySerializer(data=request.query_params)  # V-25
+        if not serializer.is_valid():
+            return Response({'error': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            data = serializer.validated_data
+            drafts = services.view_drafts(
+                username=data['username'],
+                designation=data['designation'],
+                src_module=data.get('src_module', 'filetracking'),
+            )
+            return Response({'drafts': drafts})
+        except Exception as e:
+            logger.exception("DraftFileView error")
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CreateDraftFile(APIView):
-    """V-18: Delegates to services.create_draft_via_sdk()."""
+    """POST api/createdraft/ — Create a draft file."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         serializer = DraftCreateInputSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
+            data = serializer.validated_data
             file_id = services.create_draft_via_sdk(
-                uploader=serializer.validated_data['uploader'],
-                uploader_designation=serializer.validated_data['uploader_designation'],
-                src_module=serializer.validated_data.get('src_module', 'filetracking'),
-                src_object_id=serializer.validated_data.get('src_object_id', ''),
-                file_extra_JSON=request.data.get('file_extra_JSON', {}),
-                attached_file=request.FILES.get('attached_file'),
+                uploader=data['uploader'],
+                uploader_designation=data['uploader_designation'],
+                src_module=data.get('src_module', 'filetracking'),
+                src_object_id=data.get('src_object_id', ''),
+                file_extra_JSON=data.get('file_extra_JSON', {}),
+                attached_file=data.get('file_attachment'),
             )
             return Response({'file_id': file_id}, status=status.HTTP_201_CREATED)
         except Exception as e:
-            logger.error(f"Error creating draft: {e}")
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-class DraftFileView(APIView):
-    """V-19: Delegates to services.view_drafts(). Removed print() (V-34)."""
-    authentication_classes = [TokenAuthentication]
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request):
-        username = request.query_params.get('username')
-        designation = request.query_params.get('designation')
-        src_module = request.query_params.get('src_module')
-        try:
-            draft_files = services.view_drafts(username, designation, src_module)
-            return Response(draft_files, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(f"Error viewing drafts: {e}")
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-class ArchiveFileView(APIView):
-    """V-20: Delegates to services.view_archived()."""
-    authentication_classes = [TokenAuthentication]
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request):
-        username = request.query_params.get('username')
-        designation = request.query_params.get('designation', '')
-        src_module = request.query_params.get('src_module')
-        try:
-            archived_files = services.view_archived(username, designation, src_module)
-            return Response(archived_files, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(f"Error viewing archives: {e}")
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            logger.exception("CreateDraftFile error")
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CreateArchiveFile(APIView):
-    """V-20: Delegates to services.archive_file_sdk()."""
+    """POST api/createarchive/ — Archive a file."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         serializer = ArchiveInputSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
-            success = services.archive_file_sdk(serializer.validated_data['file_id'])
-            if success:
-                return Response({'success': True})
-            else:
-                return Response({'error': 'File does not exist'}, status=status.HTTP_404_NOT_FOUND)
+            data = serializer.validated_data
+            services.archive_file_sdk(data['file_id'])
+            return Response({'message': 'File archived successfully'})
         except Exception as e:
-            logger.error(f"Error archiving file: {e}")
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            logger.exception("CreateArchiveFile error")
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
-class GetDesignationsView(APIView):
-    """V-21: Re-enabled authentication (was commented out)."""
+class ArchiveFileView(APIView):
+    """GET api/archive/ — List archived files. (V-26: uses ArchiveQuerySerializer)"""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
-    def get(self, request, username, *args, **kwargs):
-        user_designations = services.get_designations(username)
-        return Response({'designations': user_designations})
+    def get(self, request):
+        serializer = ArchiveQuerySerializer(data=request.query_params)  # V-26
+        if not serializer.is_valid():
+            return Response({'error': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            data = serializer.validated_data
+            archive_files = services.view_archived(
+                username=data['username'],
+                designation=data['designation'],
+                src_module=data.get('src_module', 'filetracking'),
+            )
+            return Response({'archive': archive_files})
+        except Exception as e:
+            logger.exception("ArchiveFileView error")
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class GetDesignationsView(APIView):
+    """GET api/designations/<username>/ — List designations for a user."""
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, username):
+        try:
+            designations = services.get_designations(username)
+            return Response({'designations': designations})
+        except Exception as e:
+            logger.exception("GetDesignationsView error")
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)

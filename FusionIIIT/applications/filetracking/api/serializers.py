@@ -1,82 +1,108 @@
 # api/serializers.py
-# Validation + serialization for the filetracking module.
-# Fixes: V-25, V-26, V-37, V-38
+# Validation + serialization for the filetracking API layer.
+# Fixes: V-25, V-26
 
 from rest_framework import serializers
 from ..models import File, Tracking, MAX_FILE_SIZE_BYTES
 
 
 class FileSerializer(serializers.ModelSerializer):
-    """V-37: Explicit field list instead of __all__."""
     class Meta:
         model = File
-        fields = [
-            'id', 'uploader', 'designation', 'subject', 'description',
-            'upload_date', 'upload_file', 'is_read', 'src_module',
-            'src_object_id', 'file_extra_JSON',
-        ]
+        fields = '__all__'
 
 
 class TrackingSerializer(serializers.ModelSerializer):
-    """V-38: Explicit field list instead of __all__."""
     class Meta:
         model = Tracking
-        fields = [
-            'id', 'file_id', 'current_id', 'current_design', 'receiver_id',
-            'receive_design', 'receive_date', 'forward_date', 'remarks',
-            'upload_file', 'is_read', 'tracking_extra_JSON',
-        ]
+        fields = '__all__'
 
 
 class FileHeaderSerializer(serializers.ModelSerializer):
-    """Serializes everything except upload_file and is_read."""
+    """Subset of File fields for list views (excludes upload_file, is_read)."""
     class Meta:
         model = File
-        exclude = ['upload_file', 'is_read']
+        fields = ['id', 'uploader', 'designation', 'subject', 'description',
+                  'upload_date', 'src_module', 'src_object_id', 'file_extra_JSON']
 
 
 # ---------------------------------------------------------------------------
-# Input validation serializers  (V-25, V-26)
+# Input serializers — compose / forward / draft
 # ---------------------------------------------------------------------------
 
 class FileCreateInputSerializer(serializers.Serializer):
-    """V-25: Input validation for CreateFileView."""
-    designation = serializers.CharField(required=True)
-    receiver_username = serializers.CharField(required=True)
-    receiver_designation = serializers.CharField(required=True)
-    subject = serializers.CharField(required=True, max_length=100)
-    description = serializers.CharField(required=False, allow_blank=True, max_length=400)
+    """Input for creating and sending a file."""
+    uploader = serializers.CharField()
+    uploader_designation = serializers.CharField()
+    receiver = serializers.CharField()
+    receiver_designation = serializers.CharField()
+    subject = serializers.CharField(required=False, default='')
+    description = serializers.CharField(required=False, default='')
+    src_module = serializers.CharField(required=False, default='filetracking')
+    src_object_id = serializers.CharField(required=False, default='')
+    file_extra_JSON = serializers.JSONField(required=False, default=dict)
+    file_attachment = serializers.FileField(required=False, default=None)
+
+    def validate_file_attachment(self, value):
+        if value and value.size > MAX_FILE_SIZE_BYTES:
+            raise serializers.ValidationError("File should not be greater than 10 MB")
+        return value
 
 
 class DraftCreateInputSerializer(serializers.Serializer):
-    """Input validation for CreateDraftFile."""
-    uploader = serializers.CharField(required=True)
-    uploader_designation = serializers.CharField(required=True)
+    """Input for creating a draft."""
+    uploader = serializers.CharField()
+    uploader_designation = serializers.CharField()
     src_module = serializers.CharField(required=False, default='filetracking')
     src_object_id = serializers.CharField(required=False, default='')
+    file_extra_JSON = serializers.JSONField(required=False, default=dict)
+    file_attachment = serializers.FileField(required=False, default=None)
 
 
 class ForwardFileInputSerializer(serializers.Serializer):
-    """Input validation for ForwardFileView."""
-    receiver = serializers.CharField(required=True)
-    receiver_designation = serializers.CharField(required=True)
-    remarks = serializers.CharField(required=False, allow_blank=True, default="")
+    """Input for forwarding a file."""
+    receiver = serializers.CharField()
+    receiver_designation = serializers.CharField()
+    file_extra_JSON = serializers.JSONField(required=False, default=dict)
+    remarks = serializers.CharField(required=False, default='')
+    file_attachment = serializers.FileField(required=False, default=None)
 
-
-class InboxQuerySerializer(serializers.Serializer):
-    """V-26: Input validation for ViewInboxView query params."""
-    username = serializers.CharField(required=True)
-    designation = serializers.CharField(required=False, allow_blank=True)
-    src_module = serializers.CharField(required=True)
-
-
-class OutboxQuerySerializer(serializers.Serializer):
-    """Input validation for ViewOutboxView query params."""
-    username = serializers.CharField(required=True)
-    designation = serializers.CharField(required=False, allow_blank=True)
-    src_module = serializers.CharField(required=True)
+    def validate_file_attachment(self, value):
+        if value and value.size > MAX_FILE_SIZE_BYTES:
+            raise serializers.ValidationError("File should not be greater than 10 MB")
+        return value
 
 
 class ArchiveInputSerializer(serializers.Serializer):
-    """Input validation for CreateArchiveFile."""
-    file_id = serializers.IntegerField(required=True)
+    """Input for archiving a file."""
+    file_id = serializers.IntegerField()
+
+
+# ---------------------------------------------------------------------------
+# Query serializers — inbox / outbox / draft / archive  (V-25, V-26)
+# ---------------------------------------------------------------------------
+
+class InboxQuerySerializer(serializers.Serializer):
+    username = serializers.CharField()
+    designation = serializers.CharField()
+    src_module = serializers.CharField(required=False, default='filetracking')
+
+
+class OutboxQuerySerializer(serializers.Serializer):
+    username = serializers.CharField()
+    designation = serializers.CharField()
+    src_module = serializers.CharField(required=False, default='filetracking')
+
+
+class DraftQuerySerializer(serializers.Serializer):
+    """V-25: Query params validation for DraftFileView.get()."""
+    username = serializers.CharField()
+    designation = serializers.CharField()
+    src_module = serializers.CharField(required=False, default='filetracking')
+
+
+class ArchiveQuerySerializer(serializers.Serializer):
+    """V-26: Query params validation for ArchiveFileView.get()."""
+    username = serializers.CharField()
+    designation = serializers.CharField()
+    src_module = serializers.CharField(required=False, default='filetracking')
