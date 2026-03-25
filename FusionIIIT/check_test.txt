@@ -1,0 +1,26 @@
+Traceback (most recent call last):
+  File "manage.py", line 10, in <module>
+    execute_from_command_line(sys.argv)
+  File "C:\Users\sujit\OneDrive\Documents\Fusion_new\venv\lib\site-packages\django\core\management\__init__.py", line 401, in execute_from_command_line
+    utility.execute()
+  File "C:\Users\sujit\OneDrive\Documents\Fusion_new\venv\lib\site-packages\django\core\management\__init__.py", line 395, in execute
+    self.fetch_command(subcommand).run_from_argv(self.argv)
+  File "C:\Users\sujit\OneDrive\Documents\Fusion_new\venv\lib\site-packages\django\core\management\commands\test.py", line 23, in run_from_argv
+    super().run_from_argv(argv)
+  File "C:\Users\sujit\OneDrive\Documents\Fusion_new\venv\lib\site-packages\django\core\management\base.py", line 330, in run_from_argv
+    self.execute(*args, **cmd_options)
+  File "C:\Users\sujit\OneDrive\Documents\Fusion_new\venv\lib\site-packages\django\core\management\base.py", line 371, in execute
+    output = self.handle(*args, **options)
+  File "C:\Users\sujit\OneDrive\Documents\Fusion_new\venv\lib\site-packages\django\core\management\commands\test.py", line 53, in handle
+    failures = test_runner.run_tests(test_labels)
+  File "C:\Users\sujit\OneDrive\Documents\Fusion_new\venv\lib\site-packages\django\test\runner.py", line 693, in run_tests
+    suite = self.build_suite(test_labels, extra_tests)
+  File "C:\Users\sujit\OneDrive\Documents\Fusion_new\venv\lib\site-packages\django\test\runner.py", line 579, in build_suite
+    tests = self.test_loader.discover(start_dir=label, **kwargs)
+  File "C:\Users\sujit\AppData\Local\Programs\Python\Python38\lib\unittest\loader.py", line 340, in discover
+    self._get_directory_containing_module(top_part)
+  File "C:\Users\sujit\AppData\Local\Programs\Python\Python38\lib\unittest\loader.py", line 354, in _get_directory_containing_module
+    full_path = os.path.abspath(module.__file__)
+  File "C:\Users\sujit\AppData\Local\Programs\Python\Python38\lib\ntpath.py", line 519, in abspath
+    return normpath(_getfullpathname(path))
+TypeError: _getfullpathname: path should be string, bytes or os.PathLike, not NoneType

@@ -9,10 +9,12 @@ from rest_framework.test import APIClient
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 
-from applications.globals.models import ExtraInfo, Designation, HoldsDesignation, Department
+from applications.globals.models import ExtraInfo, Designation, HoldsDesignation, DepartmentInfo
 from applications.visitor_hostel.models import (
     BookingDetail, RoomDetail, VisitorDetail, MealRecord,
     Bill, Inventory, InventoryBill,
+)
+from applications.visitor_hostel.services import (
     ROOM_RATES, MEAL_RATES, ROOM_BILL_BASE,
 )
 from applications.visitor_hostel import services

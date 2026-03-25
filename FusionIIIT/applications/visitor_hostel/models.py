@@ -59,26 +59,7 @@ BILL_TO_BE_SETTLED_BY = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Rate constants  (V-14, V-15)
-# ---------------------------------------------------------------------------
-
-ROOM_RATES = {
-    'A': {'SingleBed': 0, 'DoubleBed': 0, 'VIP': 0},
-    'B': {'SingleBed': 400, 'DoubleBed': 500, 'VIP': 500},
-    'C': {'SingleBed': 800, 'DoubleBed': 1000, 'VIP': 1000},
-    'D': {'SingleBed': 1400, 'DoubleBed': 1600, 'VIP': 1600},
-}
-
-MEAL_RATES = {
-    'morning_tea': 10,
-    'eve_tea': 10,
-    'breakfast': 50,
-    'lunch': 100,
-    'dinner': 100,
-}
-
-ROOM_BILL_BASE = 100  # Base charge for category B/C/D
+# Constants moved to services.py
 
 
 # ---------------------------------------------------------------------------

@@ -8,13 +8,31 @@ import os
 
 from django.contrib.auth.models import User
 
-from notification.views import visitors_hostel_notif
-
 from .models import (
     BookingDetail, Bill, Inventory, InventoryBill,
     MealRecord, RoomDetail, VisitorDetail,
-    ROOM_RATES, MEAL_RATES, ROOM_BILL_BASE,
 )
+
+# ---------------------------------------------------------------------------
+# Rate constants  (V-14, V-15)
+# ---------------------------------------------------------------------------
+
+ROOM_RATES = {
+    'A': {'SingleBed': 0, 'DoubleBed': 0, 'VIP': 0},
+    'B': {'SingleBed': 400, 'DoubleBed': 500, 'VIP': 500},
+    'C': {'SingleBed': 800, 'DoubleBed': 1000, 'VIP': 1000},
+    'D': {'SingleBed': 1400, 'DoubleBed': 1600, 'VIP': 1600},
+}
+
+MEAL_RATES = {
+    'morning_tea': 10,
+    'eve_tea': 10,
+    'breakfast': 50,
+    'lunch': 100,
+    'dinner': 100,
+}
+
+ROOM_BILL_BASE = 100  # Base charge for category B/C/D
 from . import selectors
 
 logger = logging.getLogger(__name__)
