@@ -1,19 +1,12 @@
-# services.py
-# All business logic for the complaint_system module.
-# Addresses: RR-01, RR-02, RR-03, RR-05, RR-06, RR-08, RR-11, RR-13, RR-14, RR-15, RR-16, RR-24
-
 import logging
 from datetime import datetime, timedelta
 
-from django.shortcuts import get_object_or_404
-
-from applications.globals.models import ExtraInfo
 from notification.views import complaint_system_notif
 from applications.filetracking.sdk.methods import forward_file
 
 from .models import (
     Caretaker, Warden, StudentComplain, ServiceProvider,
-    Complaint_Admin, ServiceAuthority, Workers,
+    Complaint_Admin, ServiceAuthority, Workers, ComplaintStatus,
 )
 from . import selectors
 
@@ -21,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Constants: complaint type -> finish days  (RR-01)
+# Constants: complaint type -> finish days
 # ---------------------------------------------------------------------------
 
 COMPLAINT_TYPE_DAYS = {
@@ -43,7 +36,7 @@ COMPLAINT_TYPE_DAYS = {
 DEFAULT_FINISH_DAYS = 2
 
 # ---------------------------------------------------------------------------
-# Constants: location -> designation  (RR-02)
+# Constants: location -> designation
 # ---------------------------------------------------------------------------
 
 LOCATION_DESIGNATION_MAP = {
@@ -64,30 +57,27 @@ DEFAULT_DESIGNATION = 'rewacaretaker'
 
 
 # ---------------------------------------------------------------------------
-# Helper: calculate complaint finish date  (RR-01)
+# Helper: calculate complaint finish date
 # ---------------------------------------------------------------------------
 
 def calculate_complaint_finish_date(complaint_type):
-    """Return the finish date based on complaint type."""
     days = COMPLAINT_TYPE_DAYS.get(complaint_type, DEFAULT_FINISH_DAYS)
     return (datetime.now() + timedelta(days=days)).date()
 
 
 # ---------------------------------------------------------------------------
-# Helper: resolve location to caretaker designation  (RR-02)
+# Helper: resolve location to caretaker designation
 # ---------------------------------------------------------------------------
 
 def resolve_location_to_designation(location):
-    """Return the caretaker designation name for a given location."""
     return LOCATION_DESIGNATION_MAP.get(location, DEFAULT_DESIGNATION)
 
 
 # ---------------------------------------------------------------------------
-# Helper: update caretaker rating  (RR-05)
+# Helper: update caretaker rating
 # ---------------------------------------------------------------------------
 
 def _update_caretaker_rating(caretaker, new_rating):
-    """Average the new rating with the caretaker's existing rating."""
     rate = caretaker.rating
     if rate == 0:
         caretaker.rating = new_rating
@@ -97,14 +87,10 @@ def _update_caretaker_rating(caretaker, new_rating):
 
 
 # ---------------------------------------------------------------------------
-# Determine user type  (RR-24)
+# Determine user type
 # ---------------------------------------------------------------------------
 
 def determine_user_type(user):
-    """
-    Determine the role of a user and return (user_type, next_url).
-    Uses .filter().exists() instead of fetching all rows.
-    """
     extra = selectors.get_extrainfo_by_user(user)
     if extra is None:
         return None, None
@@ -123,35 +109,22 @@ def determine_user_type(user):
 
 
 # ---------------------------------------------------------------------------
-# Lodge complaint  (RR-03)
+# Lodge complaint
 # ---------------------------------------------------------------------------
 
 def lodge_complaint(user, validated_data, notify_single=False):
-    """
-    Create a complaint and send notification to the relevant caretaker(s).
-
-    Args:
-        user: The requesting User object (for notification sender).
-        validated_data: Dict with complaint fields.
-        notify_single: If True, use .get() for caretaker lookup.
-                       If False, use .filter().distinct() and notify all.
-
-    Returns:
-        Tuple of (created StudentComplain instance, serialized data dict).
-    """
     extra = selectors.get_extrainfo_by_user(user)
     validated_data['complainer'] = extra.id
-    validated_data['status'] = 0
+    validated_data['status'] = ComplaintStatus.PENDING
 
     comp_type = validated_data.get('complaint_type', '')
     validated_data['complaint_finish'] = calculate_complaint_finish_date(comp_type)
 
-    from .serializers import StudentComplainSerializer
+    from .api.serializers import StudentComplainSerializer
     serializer = StudentComplainSerializer(data=validated_data)
     serializer.is_valid(raise_exception=True)
     complaint = serializer.save()
 
-    # Notification
     location = validated_data.get('location', '')
     dsgn = resolve_location_to_designation(location)
 
@@ -180,10 +153,6 @@ def lodge_complaint(user, validated_data, notify_single=False):
 # ---------------------------------------------------------------------------
 
 def submit_caretaker_area_feedback(caretaker_type, feedback, rating):
-    """
-    Submit feedback for all caretakers in a given area.
-    Preserves original logic: update every caretaker of that area.
-    """
     all_caretaker = selectors.get_caretakers_by_area(caretaker_type)
     for caretaker in all_caretaker:
         _update_caretaker_rating(caretaker, rating)
@@ -192,14 +161,10 @@ def submit_caretaker_area_feedback(caretaker_type, feedback, rating):
 
 
 # ---------------------------------------------------------------------------
-# Submit complaint feedback  (RR-05)
+# Submit complaint feedback
 # ---------------------------------------------------------------------------
 
 def submit_complaint_feedback(complaint_id, feedback, rating):
-    """
-    Update complaint feedback/flag and recalculate the caretaker rating.
-    Raises StudentComplain.DoesNotExist or Caretaker.DoesNotExist on error.
-    """
     selectors.update_complaint_feedback(complaint_id, feedback, rating)
     complaint = selectors.get_complaint_by_id(complaint_id)
     caretaker = selectors.get_caretaker_by_area(complaint.location)
@@ -208,24 +173,11 @@ def submit_complaint_feedback(complaint_id, feedback, rating):
 
 
 # ---------------------------------------------------------------------------
-# Resolve complaint  (RR-08)
+# Resolve complaint
 # ---------------------------------------------------------------------------
 
 def resolve_complaint(cid, yesorno, comment, upload_file, requesting_user):
-    """
-    Resolve or decline a complaint.
-
-    Args:
-        cid: Complaint ID.
-        yesorno: 'Yes' to resolve, 'No' to decline.
-        comment: Caretaker's comment.
-        upload_file: Optional uploaded image or None.
-        requesting_user: The User resolving the complaint.
-
-    Returns:
-        dict with success message.
-    """
-    intstatus = 2 if yesorno == 'Yes' else 3
+    intstatus = ComplaintStatus.RESOLVED if yesorno == 'Yes' else ComplaintStatus.DECLINED
 
     complaint = selectors.get_complaint_by_id_basic(cid)
     complaint.status = intstatus
@@ -236,7 +188,6 @@ def resolve_complaint(cid, yesorno, comment, upload_file, requesting_user):
 
     complaint.save()
 
-    # Notification
     complainer_details = selectors.get_complaint_by_id(cid)
     student = 0
     if yesorno == 'Yes':
@@ -259,14 +210,10 @@ def resolve_complaint(cid, yesorno, comment, upload_file, requesting_user):
 
 
 # ---------------------------------------------------------------------------
-# Forward complaint to service provider  (RR-14)
+# Forward complaint to service provider
 # ---------------------------------------------------------------------------
 
 def forward_complaint_to_service_provider(comp_id, requesting_user):
-    """
-    Forward a complaint to the relevant service provider.
-    Returns a tuple (result_dict, http_status_code).
-    """
     complaint = selectors.get_complaint_by_id_basic(comp_id)
     complaint_type = complaint.complaint_type
 
@@ -275,13 +222,11 @@ def forward_complaint_to_service_provider(comp_id, requesting_user):
         return {'error': 'ServiceProvider does not exist for this complaint type'}, 404
 
     service_provider = service_providers.first()
-    service_provider_details = ExtraInfo.objects.get(id=service_provider.ser_pro_id.id)
+    service_provider_details = selectors.get_extrainfo_by_id(service_provider.ser_pro_id.id)
 
-    # Update complaint status
-    complaint.status = 1
+    complaint.status = ComplaintStatus.FORWARDED
     complaint.save()
 
-    # Notify service providers
     sup_designations = selectors.get_holds_designations_for_user(service_provider_details.user_id)
     for sup in sup_designations:
         complaint_system_notif(
@@ -293,7 +238,6 @@ def forward_complaint_to_service_provider(comp_id, requesting_user):
             "A new complaint has been assigned to you",
         )
 
-    # Forward file
     files = selectors.get_files_for_complaint(comp_id)
     if not files.exists():
         return {'error': 'No files associated with this complaint'}, 206
@@ -312,14 +256,10 @@ def forward_complaint_to_service_provider(comp_id, requesting_user):
 
 
 # ---------------------------------------------------------------------------
-# Change complaint status  (RR-06)
+# Change complaint status
 # ---------------------------------------------------------------------------
 
 def change_complaint_status(complaint_id, new_status):
-    """
-    Change the status of a complaint.
-    If status is '2' or '3', also clear worker_id.
-    """
     complaint = selectors.get_complaint_by_id_basic(complaint_id)
     complaint.status = new_status
     if new_status in ('2', '3'):
@@ -332,10 +272,6 @@ def change_complaint_status(complaint_id, new_status):
 # ---------------------------------------------------------------------------
 
 def remove_worker(work_id):
-    """
-    Remove a worker if not assigned to any complaints.
-    Returns (success_bool, message).
-    """
     worker = selectors.get_worker_by_id(work_id)
     assigned = selectors.get_complaints_assigned_to_worker(worker)
     if assigned == 0:
@@ -345,14 +281,10 @@ def remove_worker(work_id):
 
 
 # ---------------------------------------------------------------------------
-# Delete complaint  (RR-13)
+# Delete complaint
 # ---------------------------------------------------------------------------
 
 def delete_complaint(complaint_id, requesting_user):
-    """
-    Delete a complaint after ownership/role checks.
-    Returns (success_bool, message).
-    """
     complaint = selectors.get_complaint_by_id_basic(complaint_id)
     extra = selectors.get_extrainfo_by_user(requesting_user)
 
@@ -368,17 +300,12 @@ def delete_complaint(complaint_id, requesting_user):
 
 
 # ---------------------------------------------------------------------------
-# Generate report  (RR-15)
+# Generate report
 # ---------------------------------------------------------------------------
 
 def generate_report(user):
-    """
-    Return the appropriate complaints queryset for report generation
-    based on the user's role.  Returns (queryset, error_message).
-    """
     extra = selectors.get_extrainfo_by_user(user)
 
-    # Check if complaint admin first
     try:
         selectors.get_complaint_admin_by_extrainfo(extra)
         return selectors.get_all_complaints(), None
@@ -421,11 +348,11 @@ def generate_report(user):
         complaints = selectors.get_complaints_for_report_service_provider(service_provider.type)
 
     if is_care and not is_sp and not is_warden_flag:
-        caretaker = get_object_or_404(Caretaker, staff_id=extra)
+        caretaker = selectors.get_caretaker_by_extrainfo(extra)
         complaints = selectors.get_complaints_for_report_area(caretaker.area)
 
     if is_warden_flag and warden:
-        warden_obj = get_object_or_404(Warden, staff_id=extra)
+        warden_obj = selectors.get_warden_by_extrainfo(extra)
         complaints = selectors.get_complaints_for_report_area(warden_obj.area)
 
     if is_complaint_admin_attr:
@@ -435,13 +362,10 @@ def generate_report(user):
 
 
 # ---------------------------------------------------------------------------
-# Get complaints for user  (api/ views helper)
+# Get complaints for user (api views helper)
 # ---------------------------------------------------------------------------
 
 def get_complaints_for_user(user):
-    """
-    Return the queryset of complaints visible to a user based on their role.
-    """
     extra = selectors.get_extrainfo_by_user(user)
 
     if extra.user_type == 'student':
@@ -452,19 +376,14 @@ def get_complaints_for_user(user):
     elif extra.user_type == 'faculty':
         sp = selectors.get_service_provider_by_extrainfo(extra)
         return selectors.get_complaints_by_location(sp.type)
-    return StudentComplain.objects.none()
+    return selectors.get_empty_complaints_queryset()
 
 
 # ---------------------------------------------------------------------------
-# Get complaint detail  (api/ views helper, RR-20 fix)
+# Get complaint detail (api views helper)
 # ---------------------------------------------------------------------------
 
 def get_complaint_detail_for_api(complaint_id):
-    """
-    Return a dict with complaint detail, worker, complainer, and extra info.
-    Fixes the original bug where 'worker_detail' variable was used instead
-    of 'Workers' model.
-    """
     complaint = selectors.get_complaint_by_id(complaint_id)
 
     worker_data = {}
@@ -474,7 +393,7 @@ def get_complaint_detail_for_api(complaint_id):
         worker_data = WorkersSerializer(instance=worker).data
 
     complainer_user = selectors.get_user_by_username(complaint.complainer.user.username)
-    complainer_extra = ExtraInfo.objects.get(user=complainer_user)
+    complainer_extra = selectors.get_extrainfo_by_id(complainer_user.id)
 
     return {
         'complaint': complaint,
@@ -482,3 +401,135 @@ def get_complaint_detail_for_api(complaint_id):
         'complainer_user': complainer_user,
         'complainer_extra_info': complainer_extra,
     }
+
+
+# ---------------------------------------------------------------------------
+# Create worker
+# ---------------------------------------------------------------------------
+
+def create_worker(validated_data):
+    from .api.serializers import WorkersSerializer
+    serializer = WorkersSerializer(data=validated_data)
+    serializer.is_valid(raise_exception=True)
+    return serializer.save(), serializer.data
+
+
+# ---------------------------------------------------------------------------
+# Update worker
+# ---------------------------------------------------------------------------
+
+def update_worker(worker_id, validated_data):
+    worker = selectors.get_worker_by_id(worker_id)
+    from .api.serializers import WorkersSerializer
+    serializer = WorkersSerializer(worker, data=validated_data)
+    serializer.is_valid(raise_exception=True)
+    return serializer.save(), serializer.data
+
+
+# ---------------------------------------------------------------------------
+# Delete worker
+# ---------------------------------------------------------------------------
+
+def delete_worker(worker_id):
+    worker = selectors.get_worker_by_id(worker_id)
+    worker.delete()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Create complaint (API)
+# ---------------------------------------------------------------------------
+
+def create_complaint(validated_data):
+    from .api.serializers import StudentComplainSerializer
+    serializer = StudentComplainSerializer(data=validated_data)
+    serializer.is_valid(raise_exception=True)
+    return serializer.save(), serializer.data
+
+
+# ---------------------------------------------------------------------------
+# Update complaint (API)
+# ---------------------------------------------------------------------------
+
+def update_complaint(complaint_id, validated_data):
+    complaint = selectors.get_complaint_by_id_basic(complaint_id)
+    from .api.serializers import StudentComplainSerializer
+    serializer = StudentComplainSerializer(complaint, data=validated_data)
+    serializer.is_valid(raise_exception=True)
+    return serializer.save(), serializer.data
+
+
+# ---------------------------------------------------------------------------
+# Delete complaint by ID (API, no auth check)
+# ---------------------------------------------------------------------------
+
+def delete_complaint_by_id(complaint_id):
+    complaint = selectors.get_complaint_by_id_basic(complaint_id)
+    complaint.delete()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Create caretaker
+# ---------------------------------------------------------------------------
+
+def create_caretaker(validated_data):
+    from .api.serializers import CaretakerSerializer
+    serializer = CaretakerSerializer(data=validated_data)
+    serializer.is_valid(raise_exception=True)
+    return serializer.save(), serializer.data
+
+
+# ---------------------------------------------------------------------------
+# Update caretaker
+# ---------------------------------------------------------------------------
+
+def update_caretaker(caretaker_id, validated_data):
+    caretaker = selectors.get_caretaker_by_pk(caretaker_id)
+    from .api.serializers import CaretakerSerializer
+    serializer = CaretakerSerializer(caretaker, data=validated_data)
+    serializer.is_valid(raise_exception=True)
+    return serializer.save(), serializer.data
+
+
+# ---------------------------------------------------------------------------
+# Delete caretaker
+# ---------------------------------------------------------------------------
+
+def delete_caretaker(caretaker_id):
+    caretaker = selectors.get_caretaker_by_pk(caretaker_id)
+    caretaker.delete()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Create service provider
+# ---------------------------------------------------------------------------
+
+def create_service_provider(validated_data):
+    from .api.serializers import ServiceProviderSerializer
+    serializer = ServiceProviderSerializer(data=validated_data)
+    serializer.is_valid(raise_exception=True)
+    return serializer.save(), serializer.data
+
+
+# ---------------------------------------------------------------------------
+# Update service provider
+# ---------------------------------------------------------------------------
+
+def update_service_provider(sp_id, validated_data):
+    sp = selectors.get_service_provider_by_pk(sp_id)
+    from .api.serializers import ServiceProviderSerializer
+    serializer = ServiceProviderSerializer(sp, data=validated_data)
+    serializer.is_valid(raise_exception=True)
+    return serializer.save(), serializer.data
+
+
+# ---------------------------------------------------------------------------
+# Delete service provider
+# ---------------------------------------------------------------------------
+
+def delete_service_provider(sp_id):
+    sp = selectors.get_service_provider_by_pk(sp_id)
+    sp.delete()
+    return True

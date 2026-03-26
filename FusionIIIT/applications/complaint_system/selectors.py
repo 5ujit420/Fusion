@@ -1,7 +1,3 @@
-# selectors.py
-# All database queries for the complaint_system module.
-# Addresses: RR-11, RR-12, RR-24
-
 from django.shortcuts import get_object_or_404
 
 from applications.globals.models import ExtraInfo, HoldsDesignation, User
@@ -16,12 +12,15 @@ from .models import (
 # ---------------------------------------------------------------------------
 
 def get_extrainfo_by_user(user):
-    """Return the ExtraInfo instance for the given User."""
     return ExtraInfo.objects.select_related('user', 'department').filter(user=user).first()
 
 
+def get_extrainfo_by_id(extrainfo_id):
+    return ExtraInfo.objects.get(id=extrainfo_id)
+
+
 # ---------------------------------------------------------------------------
-# Role-check selectors  (RR-24: replaces .all() + Python iteration)
+# Role-check selectors
 # ---------------------------------------------------------------------------
 
 def is_complaint_admin(extrainfo_id):
@@ -45,7 +44,6 @@ def is_warden(extrainfo_id):
 # ---------------------------------------------------------------------------
 
 def get_complaints_by_complainer(extrainfo):
-    """Return complaints filed by a specific user, newest first."""
     return StudentComplain.objects.filter(complainer=extrainfo).order_by('-id')
 
 
@@ -60,19 +58,21 @@ def get_complaints_by_type_and_status(complaint_type, status):
 
 
 def get_complaint_by_id(complaint_id):
-    """Return a single complaint with related data, or raise DoesNotExist."""
     return StudentComplain.objects.select_related(
         'complainer', 'complainer__user', 'complainer__department'
     ).get(id=complaint_id)
 
 
 def get_complaint_by_id_basic(complaint_id):
-    """Return a complaint without select_related, or raise DoesNotExist."""
     return StudentComplain.objects.get(id=complaint_id)
 
 
 def get_all_complaints():
     return StudentComplain.objects.all()
+
+
+def get_empty_complaints_queryset():
+    return StudentComplain.objects.none()
 
 
 def get_pending_complaints_by_location(location):
@@ -94,7 +94,6 @@ def get_complaints_assigned_to_worker(worker):
 
 
 def update_complaint_feedback(complaint_id, feedback, flag):
-    """Update feedback and flag fields on a complaint."""
     StudentComplain.objects.filter(id=complaint_id).update(
         feedback=feedback, flag=flag
     )
@@ -106,6 +105,10 @@ def update_complaint_feedback(complaint_id, feedback, flag):
 
 def get_caretaker_by_staff_id(extrainfo_id):
     return Caretaker.objects.select_related('staff_id').get(staff_id=extrainfo_id)
+
+
+def get_caretaker_by_extrainfo(extrainfo):
+    return Caretaker.objects.select_related('staff_id').get(staff_id=extrainfo)
 
 
 def get_caretaker_by_area(area):
@@ -138,6 +141,10 @@ def get_warden_by_staff_id(extrainfo):
     return Warden.objects.get(staff_id=extrainfo)
 
 
+def get_warden_by_extrainfo(extrainfo):
+    return Warden.objects.get(staff_id=extrainfo)
+
+
 # ---------------------------------------------------------------------------
 # ServiceProvider selectors
 # ---------------------------------------------------------------------------
@@ -159,7 +166,6 @@ def get_service_provider_by_pk(pk):
 
 
 def get_service_provider_by_staff_id(extrainfo):
-    """Check if user is a service provider by staff_id lookup."""
     return ServiceProvider.objects.get(staff_id=extrainfo)
 
 
@@ -196,14 +202,12 @@ def get_all_workers():
 # ---------------------------------------------------------------------------
 
 def get_holds_designation_by_name(designation_name):
-    """Return all HoldsDesignation entries for a designation name (distinct users)."""
     return HoldsDesignation.objects.select_related(
         'user', 'working', 'designation'
     ).filter(designation__name=designation_name).distinct('user')
 
 
 def get_holds_designation_single(designation_name):
-    """Return a single HoldsDesignation entry."""
     return HoldsDesignation.objects.select_related(
         'user', 'working', 'designation'
     ).get(designation__name=designation_name)
@@ -226,10 +230,9 @@ def get_user_by_username(username):
 
 
 # ---------------------------------------------------------------------------
-# File selectors  (for filetracking integration)
+# File selectors (for filetracking integration)
 # ---------------------------------------------------------------------------
 
 def get_files_for_complaint(complaint_id):
-    """Import here to avoid circular imports with filetracking module."""
     from applications.filetracking.models import File
     return File.objects.filter(src_object_id=complaint_id)
