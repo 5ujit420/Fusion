@@ -1,232 +1,281 @@
-from django.contrib.auth import get_user_model
-from django.contrib.auth.decorators import login_required
-from applications.globals.models import (HoldsDesignation,Designation)
-from django.shortcuts import get_object_or_404
-from django.forms.models import model_to_dict
+# api/views.py
+# Class-based API views for the complaint_system module.
+# All DB queries delegated to selectors, business logic to services.
+# Addresses: RR-19 (deprecated url/FBV), RR-20 (worker_detail bug)
+
+from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.authentication import TokenAuthentication
-from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes,authentication_classes
-from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from applications.globals.models import User,ExtraInfo
-from applications.complaint_system.models import Caretaker, StudentComplain, ServiceProvider, Workers
-from . import serializers
+from rest_framework import status
+
+from applications.complaint_system import selectors, services
+from applications.complaint_system.models import (
+    StudentComplain, Workers, Caretaker, ServiceProvider,
+)
+from .serializers import (
+    StudentComplainSerializer,
+    WorkersSerializer,
+    CaretakerSerializer,
+    ServiceProviderSerializer,
+    ExtraInfoSerializer,
+    UserSerializer,
+)
 
 
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-@authentication_classes([TokenAuthentication])
-def complaint_details_api(request,detailcomp_id1):
-    complaint_detail = StudentComplain.objects.get(id=detailcomp_id1)
-    complaint_detail_serialized = serializers.StudentComplainSerializers(instance=complaint_detail).data
-    if complaint_detail.worker_id is None:
-        worker_detail_serialized = {}
-    else :
-        worker_detail = worker_detail.objects.get(id=complaint_detail.worker_id)
-        worker_detail_serialized = serializers.WorkersSerializers(instance=worker_detail).data
-    complainer = User.objects.get(username=complaint_detail.complainer.user.username)
-    complainer_serialized = serializers.UserSerializers(instance=complainer).data
-    complainer_extra_info = ExtraInfo.objects.get(user = complainer)
-    complainer_extra_info_serialized = serializers.ExtraInfoSerializers(instance=complainer_extra_info).data
-    response = {
-        'complainer' : complainer_serialized,
-        'complainer_extra_info':complainer_extra_info_serialized,
-        'complaint_details' : complaint_detail_serialized,
-        'worker_details' : worker_detail_serialized
-    }
-    return Response(data=response,status=status.HTTP_200_OK)
+class ComplaintDetailAPIView(APIView):
+    """
+    RR-20 fix: Uses Workers model (not 'worker_detail' variable).
+    Delegates detail assembly to services.get_complaint_detail_for_api().
+    """
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
 
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-@authentication_classes([TokenAuthentication])
-def student_complain_api(request):
-    user = get_object_or_404(User,username = request.user.username)
-    user = ExtraInfo.objects.all().filter(user = user).first()
-    if user.user_type == 'student':
-        complain = StudentComplain.objects.filter(complainer = user)
-    elif user.user_type == 'staff':
-        staff = ExtraInfo.objects.get(id=user.id)
-        staff = Caretaker.objects.get(staff_id=staff)
-        complain = StudentComplain.objects.filter(location = staff.area)
-    elif user.user_type == 'faculty':
-        faculty = ExtraInfo.objects.get(id=user.id)
-        faculty = ServiceProvider.objects.get(ser_pro_id=faculty)
-        complain = StudentComplain.objects.filter(location = faculty.area)
-    complains = serializers.StudentComplainSerializers(complain,many=True).data
-    resp = {
-        'student_complain' : complains,
-    }
-    return Response(data=resp,status=status.HTTP_200_OK)
+    def get(self, request, detailcomp_id1):
+        try:
+            detail = services.get_complaint_detail_for_api(detailcomp_id1)
+        except StudentComplain.DoesNotExist:
+            return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
 
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-@authentication_classes([TokenAuthentication])
-def create_complain_api(request):
-    serializer = serializers.StudentComplainSerializers(data=request.data)
-    if serializer.is_valid():
-        serializer.save()
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-@api_view(['DELETE','PUT'])
-@permission_classes([IsAuthenticated])
-@authentication_classes([TokenAuthentication])
-def edit_complain_api(request,c_id):
-    try: 
-        complain = StudentComplain.objects.get(id = c_id) 
-    except StudentComplain.DoesNotExist: 
-        return Response({'message': 'The Complain does not exist'}, status=status.HTTP_404_NOT_FOUND)
-    if request.method == 'DELETE':
-        complain.delete()
-        return Response({'message': 'Complain deleted'},status=status.HTTP_404_NOT_FOUND)
-    elif request.method == 'PUT':
-        serializer = serializers.StudentComplainSerializers(complain,data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data,status=status.HTTP_200_OK)
-        return Response(serializer.errors,status=status.HTTP_400_BAD_REQUEST)
-
-@api_view(['GET','POST'])
-@permission_classes([IsAuthenticated])
-@authentication_classes([TokenAuthentication])
-def worker_api(request):
-
-    if request.method == 'GET':
-        worker = Workers.objects.all()
-        workers = serializers.WorkersSerializers(worker,many=True).data
-        resp = {
-            'workers' : workers,
+        response = {
+            'complainer': UserSerializer(instance=detail['complainer_user']).data,
+            'complainer_extra_info': ExtraInfoSerializer(instance=detail['complainer_extra_info']).data,
+            'complaint_details': StudentComplainSerializer(instance=detail['complaint']).data,
+            'worker_details': detail['worker_data'],
         }
-        return Response(data=resp,status=status.HTTP_200_OK)
+        return Response(data=response, status=status.HTTP_200_OK)
 
-    elif request.method =='POST':
-        user = get_object_or_404(User ,username=request.user.username)
-        user = ExtraInfo.objects.all().filter(user = user).first()
-        try :
-            caretaker = Caretaker.objects.get(staff_id=user)
-        except Caretaker.DoesNotExist:
-            return Response({'message':'Logged in user does not have the permissions'},status=status.HTTP_203_NON_AUTHORITATIVE_INFORMATION)
-        serializer = serializers.WorkersSerializers(data=request.data)
+
+class StudentComplainAPIView(APIView):
+    """List complaints for the logged-in user based on their role."""
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        complaints = services.get_complaints_for_user(request.user)
+        serialized = StudentComplainSerializer(complaints, many=True).data
+        return Response(data={'student_complain': serialized}, status=status.HTTP_200_OK)
+
+
+class CreateComplainAPIView(APIView):
+    """Create a new complaint."""
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = StudentComplainSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-@api_view(['DELETE','PUT'])
-@permission_classes([IsAuthenticated])
-@authentication_classes([TokenAuthentication])
-def edit_worker_api(request,w_id):
-    user = get_object_or_404(User ,username=request.user.username)
-    user = ExtraInfo.objects.all().filter(user = user).first()
-    try :
-        caretaker = Caretaker.objects.get(staff_id=user)
-    except Caretaker.DoesNotExist:
-        return Response({'message':'Logged in user does not have the permissions'},status=status.HTTP_203_NON_AUTHORITATIVE_INFORMATION)
-    try: 
-        worker = Workers.objects.get(id = w_id) 
-    except Workers.DoesNotExist: 
-        return Response({'message': 'The worker does not exist'}, status=status.HTTP_404_NOT_FOUND)
-    if request.method == 'DELETE':
+
+class EditComplainAPIView(APIView):
+    """Edit or delete a complaint by ID."""
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, c_id):
+        try:
+            complaint = selectors.get_complaint_by_id_basic(c_id)
+        except StudentComplain.DoesNotExist:
+            return Response({'message': 'The Complain does not exist'}, status=status.HTTP_404_NOT_FOUND)
+        complaint.delete()
+        return Response({'message': 'Complain deleted'}, status=status.HTTP_200_OK)
+
+    def put(self, request, c_id):
+        try:
+            complaint = selectors.get_complaint_by_id_basic(c_id)
+        except StudentComplain.DoesNotExist:
+            return Response({'message': 'The Complain does not exist'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = StudentComplainSerializer(complaint, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class WorkerAPIView(APIView):
+    """List all workers (GET) or create a new worker (POST)."""
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        workers = selectors.get_all_workers()
+        serialized = WorkersSerializer(workers, many=True).data
+        return Response(data={'workers': serialized}, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        extra = selectors.get_extrainfo_by_user(request.user)
+        if not selectors.is_caretaker(extra.id):
+            return Response(
+                {'message': 'Logged in user does not have the permissions'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = WorkersSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class EditWorkerAPIView(APIView):
+    """Edit or delete a worker by ID."""
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def _check_caretaker(self, request):
+        extra = selectors.get_extrainfo_by_user(request.user)
+        if not selectors.is_caretaker(extra.id):
+            return Response(
+                {'message': 'Logged in user does not have the permissions'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return None
+
+    def delete(self, request, w_id):
+        error_resp = self._check_caretaker(request)
+        if error_resp:
+            return error_resp
+        try:
+            worker = selectors.get_worker_by_id(w_id)
+        except Workers.DoesNotExist:
+            return Response({'message': 'The worker does not exist'}, status=status.HTTP_404_NOT_FOUND)
         worker.delete()
-        return Response({'message': 'Worker deleted'},status=status.HTTP_404_NOT_FOUND)
-    elif request.method == 'PUT':
-        serializer = serializers.WorkersSerializers(worker,data=request.data)
+        return Response({'message': 'Worker deleted'}, status=status.HTTP_200_OK)
+
+    def put(self, request, w_id):
+        error_resp = self._check_caretaker(request)
+        if error_resp:
+            return error_resp
+        try:
+            worker = selectors.get_worker_by_id(w_id)
+        except Workers.DoesNotExist:
+            return Response({'message': 'The worker does not exist'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = WorkersSerializer(worker, data=request.data)
         if serializer.is_valid():
             serializer.save()
-            return Response(serializer.data,status=status.HTTP_200_OK)
-        return Response(serializer.errors,status=status.HTTP_400_BAD_REQUEST)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-@api_view(['GET','POST'])
-@permission_classes([IsAuthenticated])
-@authentication_classes([TokenAuthentication])
-def caretaker_api(request):
 
-    if request.method == 'GET':
-        caretaker = Caretaker.objects.all()
-        caretakers = serializers.CaretakerSerializers(caretaker,many=True).data
-        resp = {
-            'caretakers' : caretakers,
-        }
-        return Response(data=resp,status=status.HTTP_200_OK)
-    
-    elif request.method == 'POST':
-        user = get_object_or_404(User ,username=request.user.username)
-        user = ExtraInfo.objects.all().filter(user = user).first()
-        try :
-            service_provider = ServiceProvider.objects.get(staff_id=user)
-        except ServiceProvider.DoesNotExist:
-            return Response({'message':'Logged in user does not have the permissions'},status=status.HTTP_203_NON_AUTHORITATIVE_INFORMATION)
-        serializer = serializers.CaretakerSerializers(data=request.data)
+class CaretakerAPIView(APIView):
+    """List all caretakers (GET) or create a new caretaker (POST)."""
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        caretakers = selectors.get_all_caretakers()
+        serialized = CaretakerSerializer(caretakers, many=True).data
+        return Response(data={'caretakers': serialized}, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        extra = selectors.get_extrainfo_by_user(request.user)
+        if not selectors.is_service_provider(extra.id):
+            return Response(
+                {'message': 'Logged in user does not have the permissions'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = CaretakerSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
-            return Response(serializer.data,status=status.HTTP_201_CREATED)
-        return Response(serializer.errors,status=status.HTTP_400_BAD_REQUEST) 
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-@api_view(['DELETE','PUT'])
-@permission_classes([IsAuthenticated])
-@authentication_classes([TokenAuthentication])
-def edit_caretaker_api(request,c_id):
-    user = get_object_or_404(User ,username=request.user.username)
-    user = ExtraInfo.objects.all().filter(user = user).first()
-    try :
-        service_provider = ServiceProvider.objects.get(staff_id=user)
-    except ServiceProvider.DoesNotExist:
-        return Response({'message':'Logged in user does not have the permissions'},status=status.HTTP_203_NON_AUTHORITATIVE_INFORMATION)
-    try: 
-        caretaker = Caretaker.objects.get(id = c_id) 
-    except Caretaker.DoesNotExist: 
-        return Response({'message': 'The Caretaker does not exist'}, status=status.HTTP_404_NOT_FOUND)
-    if request.method == 'DELETE':
+
+class EditCaretakerAPIView(APIView):
+    """Edit or delete a caretaker by ID."""
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def _check_service_provider(self, request):
+        extra = selectors.get_extrainfo_by_user(request.user)
+        if not selectors.is_service_provider(extra.id):
+            return Response(
+                {'message': 'Logged in user does not have the permissions'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return None
+
+    def delete(self, request, c_id):
+        error_resp = self._check_service_provider(request)
+        if error_resp:
+            return error_resp
+        try:
+            caretaker = selectors.get_caretaker_by_pk(c_id)
+        except Caretaker.DoesNotExist:
+            return Response({'message': 'The Caretaker does not exist'}, status=status.HTTP_404_NOT_FOUND)
         caretaker.delete()
-        return Response({'message': 'Caretaker deleted'},status=status.HTTP_404_NOT_FOUND)
-    elif request.method == 'PUT':
-        serializer = serializers.CaretakerSerializers(caretaker,data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data,status=status.HTTP_200_OK)
-        return Response(serializer.errors,status=status.HTTP_400_BAD_REQUEST)
+        return Response({'message': 'Caretaker deleted'}, status=status.HTTP_200_OK)
 
-@api_view(['GET','POST'])
-@permission_classes([IsAuthenticated])
-@authentication_classes([TokenAuthentication])
-def service_provider_api(request):
+    def put(self, request, c_id):
+        error_resp = self._check_service_provider(request)
+        if error_resp:
+            return error_resp
+        try:
+            caretaker = selectors.get_caretaker_by_pk(c_id)
+        except Caretaker.DoesNotExist:
+            return Response({'message': 'The Caretaker does not exist'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = CaretakerSerializer(caretaker, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    if request.method == 'GET':
-        service_provider = ServiceProvider.objects.all()
-        service_providers = serializers.ServiceProviderSerializers(service_provider,many=True).data
-        resp = {
-            'service_providers' : service_providers,
-        }
-        return Response(data=resp,status=status.HTTP_200_OK)
-    
-    elif request.method == 'POST':
-        user = get_object_or_404(User,username=request.user.username)
-        if user.is_superuser == False:
-            return Response({'message':'Logged in user does not have permission'},status=status.HTTP_203_NON_AUTHORITATIVE_INFORMATION)
-        serializer = serializers.ServiceProviderSerializers(data=request.data)
+
+class ServiceProviderAPIView(APIView):
+    """List all service providers (GET) or create one (POST, superuser only)."""
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        service_providers = selectors.get_all_service_providers()
+        serialized = ServiceProviderSerializer(service_providers, many=True).data
+        return Response(data={'service_providers': serialized}, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        if not request.user.is_superuser:
+            return Response(
+                {'message': 'Logged in user does not have permission'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = ServiceProviderSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
-            return Response(serializer.data,status=status.HTTP_201_CREATED)
-        return Response(serializer.errors,status=status.HTTP_400_BAD_REQUEST)
-   
-@api_view(['DELETE','PUT'])
-@permission_classes([IsAuthenticated])
-@authentication_classes([TokenAuthentication])
-def edit_service_provider_api(request,s_id):
-    user = get_object_or_404(User,username=request.user.username)
-    if user.is_superuser == False:
-        return Response({'message':'Logged in user does not have permission'},status=status.HTTP_203_NON_AUTHORITATIVE_INFORMATION)
-    try: 
-        service_provider = ServiceProvider.objects.get(id = s_id) 
-    except ServiceProvider.DoesNotExist: 
-        return Response({'message': 'The Caretaker does not exist'}, status=status.HTTP_404_NOT_FOUND)
-    if request.method == 'DELETE':
-        service_provider.delete()
-        return Response({'message': 'Caretaker deleted'},status=status.HTTP_404_NOT_FOUND)
-    elif request.method == 'PUT':
-        serializer = serializers.ServiceProviderSerializers(service_provider,data=request.data)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class EditServiceProviderAPIView(APIView):
+    """Edit or delete a service provider by ID (superuser only)."""
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, s_id):
+        if not request.user.is_superuser:
+            return Response(
+                {'message': 'Logged in user does not have permission'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            sp = selectors.get_service_provider_by_pk(s_id)
+        except ServiceProvider.DoesNotExist:
+            return Response({'message': 'The ServiceProvider does not exist'}, status=status.HTTP_404_NOT_FOUND)
+        sp.delete()
+        return Response({'message': 'ServiceProvider deleted'}, status=status.HTTP_200_OK)
+
+    def put(self, request, s_id):
+        if not request.user.is_superuser:
+            return Response(
+                {'message': 'Logged in user does not have permission'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            sp = selectors.get_service_provider_by_pk(s_id)
+        except ServiceProvider.DoesNotExist:
+            return Response({'message': 'The ServiceProvider does not exist'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = ServiceProviderSerializer(sp, data=request.data)
         if serializer.is_valid():
             serializer.save()
-            return Response(serializer.data,status=status.HTTP_200_OK)
-        return Response(serializer.errors,status=status.HTTP_400_BAD_REQUEST)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
