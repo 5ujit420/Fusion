@@ -1,6 +1,6 @@
 # selectors.py
-# All database queries for the filetracking module.
-# Fixes: V-02, V-40, R-05, R-06, R-07
+# All database READ queries for the filetracking module.
+# Fixes: V-02, V-40, V-43, R-05, R-06, R-07
 
 from django.contrib.auth.models import User
 from applications.globals.models import ExtraInfo, HoldsDesignation, Designation
@@ -117,7 +117,7 @@ def get_last_forw_tracking(file_id, sender_extrainfo, sender_holds_designation):
 
 
 # ---------------------------------------------------------------------------
-# File selectors  (V-40)
+# File selectors  (V-40, V-43)
 # ---------------------------------------------------------------------------
 
 def get_file_by_id(file_id):
@@ -130,6 +130,13 @@ def get_file_by_id_with_related(file_id):
     return File.objects.select_related(
         'uploader__user', 'uploader__department', 'designation'
     ).get(id=file_id)
+
+
+def get_all_files_with_related():
+    """Return all files with uploader and designation prefetched (V-43)."""
+    return File.objects.select_related(
+        'uploader__user', 'uploader__department', 'designation'
+    ).all()
 
 
 def get_draft_files(uploader_extrainfo, designation, src_module):
@@ -146,12 +153,17 @@ def get_draft_files(uploader_extrainfo, designation, src_module):
 
 
 # ---------------------------------------------------------------------------
-# User / ExtraInfo / Designation selectors  (R-07)
+# User / ExtraInfo / Designation selectors  (R-07, V-43)
 # ---------------------------------------------------------------------------
 
 def get_user_by_username(username):
     """Return a User object by username."""
     return User.objects.get(username=username)
+
+
+def get_user_by_id(user_id):
+    """Return a User object by PK (V-43)."""
+    return User.objects.get(id=user_id)
 
 
 def get_extrainfo_by_user(user):
@@ -173,6 +185,11 @@ def get_extrainfo_by_id(extra_id):
 def get_designation_by_name(designation_name):
     """Return a Designation by name."""
     return Designation.objects.get(name=designation_name)
+
+
+def get_designation_by_id(designation_id):
+    """Return a Designation by PK (V-43)."""
+    return Designation.objects.get(id=designation_id)
 
 
 def get_holds_designation(user, designation):

@@ -1,6 +1,6 @@
 # api/serializers.py
 # Validation + serialization for the filetracking module.
-# Fixes: V-25, V-26, V-37, V-38
+# Fixes: V-25, V-26, V-37, V-38, V-45
 
 from rest_framework import serializers
 from ..models import File, Tracking, MAX_FILE_SIZE_BYTES
@@ -80,3 +80,17 @@ class OutboxQuerySerializer(serializers.Serializer):
 class ArchiveInputSerializer(serializers.Serializer):
     """Input validation for CreateArchiveFile."""
     file_id = serializers.IntegerField(required=True)
+
+
+class DraftQuerySerializer(serializers.Serializer):
+    """V-45: Input validation for DraftFileView query params."""
+    username = serializers.CharField(required=True)
+    designation = serializers.CharField(required=True)
+    src_module = serializers.CharField(required=True)
+
+
+class ArchiveQuerySerializer(serializers.Serializer):
+    """V-45: Input validation for ArchiveFileView query params."""
+    username = serializers.CharField(required=True)
+    designation = serializers.CharField(required=False, allow_blank=True, default='')
+    src_module = serializers.CharField(required=True)

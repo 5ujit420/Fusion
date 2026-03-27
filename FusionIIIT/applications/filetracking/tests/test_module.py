@@ -8,10 +8,14 @@ from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 from rest_framework import status
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 from applications.globals.models import ExtraInfo, Designation, HoldsDesignation, Department
-from applications.filetracking.models import File, Tracking, MAX_FILE_SIZE_BYTES
+from applications.filetracking.models import (
+    File, Tracking, MAX_FILE_SIZE_BYTES,
+    SRC_MODULE_DEFAULT, SESSION_DESIGNATION_KEY, SESSION_DESIGNATION_FALLBACK,
+    PAGINATION_PAGE_SIZE,
+)
 from applications.filetracking import services
 from applications.filetracking import selectors
 from applications.filetracking.api.serializers import (
@@ -19,10 +23,13 @@ from applications.filetracking.api.serializers import (
     DraftCreateInputSerializer,
     ForwardFileInputSerializer,
     InboxQuerySerializer,
+    OutboxQuerySerializer,
     ArchiveInputSerializer,
     FileSerializer,
     TrackingSerializer,
     FileHeaderSerializer,
+    DraftQuerySerializer,
+    ArchiveQuerySerializer,
 )
 
 
@@ -65,6 +72,14 @@ class SelectorTests(BaseTestCase):
         with self.assertRaises(User.DoesNotExist):
             selectors.get_user_by_username('nonexistent')
 
+    def test_get_user_by_id(self):
+        user = selectors.get_user_by_id(self.user1.pk)
+        self.assertEqual(user.username, 'sender1')
+
+    def test_get_user_by_id_not_found(self):
+        with self.assertRaises(User.DoesNotExist):
+            selectors.get_user_by_id(99999)
+
     def test_get_extrainfo_by_username(self):
         ei = selectors.get_extrainfo_by_username('sender1')
         self.assertEqual(ei.pk, self.extra1.pk)
@@ -72,6 +87,14 @@ class SelectorTests(BaseTestCase):
     def test_get_designation_by_name(self):
         des = selectors.get_designation_by_name('faculty')
         self.assertEqual(des.pk, self.des_faculty.pk)
+
+    def test_get_designation_by_id(self):
+        des = selectors.get_designation_by_id(self.des_faculty.pk)
+        self.assertEqual(des.name, 'faculty')
+
+    def test_get_designation_by_id_not_found(self):
+        with self.assertRaises(Designation.DoesNotExist):
+            selectors.get_designation_by_id(99999)
 
     def test_get_holds_designation(self):
         hd = selectors.get_holds_designation(self.user1, self.des_faculty)
@@ -112,6 +135,22 @@ class SelectorTests(BaseTestCase):
         results = selectors.get_users_starting_with('send')
         self.assertTrue(results.exists())
 
+    def test_get_all_files_with_related(self):
+        File.objects.create(
+            uploader=self.extra1, designation=self.des_faculty, subject='Related Test')
+        files = selectors.get_all_files_with_related()
+        self.assertTrue(files.exists())
+
+    def test_get_file_by_id_with_related(self):
+        file_obj = File.objects.create(
+            uploader=self.extra1, designation=self.des_faculty, subject='Related Test')
+        result = selectors.get_file_by_id_with_related(file_obj.id)
+        self.assertEqual(result.subject, 'Related Test')
+
+    def test_get_holds_designation_by_id(self):
+        hd = selectors.get_holds_designation_by_id(self.hd1.pk)
+        self.assertEqual(hd.user, self.user1)
+
 
 # ===========================================================================
 # Service Tests
@@ -124,7 +163,6 @@ class ServiceUtilityTests(BaseTestCase):
         self.assertEqual(services.unique_list([]), [])
 
     def test_get_designation_display_name(self):
-        # HoldsDesignation.__str__ typically returns "username - designation"
         name = services.get_designation_display_name(self.hd1)
         self.assertIsInstance(name, str)
         self.assertTrue(len(name) > 0)
@@ -173,6 +211,17 @@ class ServiceFileCreationTests(BaseTestCase):
         # Draft should have no tracking
         tracking = Tracking.objects.filter(file_id=file_obj)
         self.assertEqual(tracking.count(), 0)
+
+    def test_create_file_via_sdk_default_src_module(self):
+        """Verify SRC_MODULE_DEFAULT is used when src_module not specified."""
+        file_id = services.create_file_via_sdk(
+            uploader='sender1',
+            uploader_designation='faculty',
+            receiver='receiver1',
+            receiver_designation='hod',
+        )
+        file_obj = File.objects.get(id=file_id)
+        self.assertEqual(file_obj.src_module, SRC_MODULE_DEFAULT)
 
 
 class ServiceViewTests(BaseTestCase):
@@ -269,6 +318,36 @@ class ServiceArchiveTests(BaseTestCase):
         # user2 is the receiver, so they can forward
         self.assertTrue(forward_en)
 
+    def test_mark_file_as_finished(self):
+        """V-44: Test the new mark_file_as_finished service."""
+        services.mark_file_as_finished(self.file_id)
+        file_obj = File.objects.get(id=self.file_id)
+        self.assertTrue(file_obj.is_read)
+        tracking = Tracking.objects.filter(file_id=self.file_id)
+        for t in tracking:
+            self.assertTrue(t.is_read)
+
+    def test_mark_file_read(self):
+        """V-44: Test the new mark_file_read service."""
+        file_obj = File.objects.get(id=self.file_id)
+        self.assertFalse(file_obj.is_read)
+        services.mark_file_read(file_obj)
+        file_obj.refresh_from_db()
+        self.assertTrue(file_obj.is_read)
+
+    def test_mark_tracking_as_read(self):
+        """V-44: Test the new mark_tracking_as_read service."""
+        tracking_qs = Tracking.objects.filter(file_id=self.file_id)
+        self.assertTrue(tracking_qs.filter(is_read=False).exists())
+        services.mark_tracking_as_read(tracking_qs)
+        self.assertFalse(tracking_qs.filter(is_read=False).exists())
+
+    def test_archive_file_with_auth_not_found(self):
+        """Test archive with nonexistent file."""
+        success, msg = services.archive_file_with_auth(99999, self.user1)
+        self.assertFalse(success)
+        self.assertEqual(msg, 'File not found')
+
 
 class ServiceDesignationTests(BaseTestCase):
 
@@ -280,7 +359,7 @@ class ServiceDesignationTests(BaseTestCase):
         factory = RequestFactory()
         request = factory.get('/')
         request.user = self.user1
-        request.session = {'currentDesignationSelected': 'faculty'}
+        request.session = {SESSION_DESIGNATION_KEY: 'faculty'}
         url = services.get_designation_redirect_url_from_session(request, 'drafts')
         self.assertIn('/filetracking/drafts/', url)
 
@@ -364,6 +443,38 @@ class SerializerValidationTests(TestCase):
         fields = FileHeaderSerializer.Meta.exclude
         self.assertIn('upload_file', fields)
         self.assertIn('is_read', fields)
+
+    def test_draft_query_serializer_valid(self):
+        """V-45: Test the new DraftQuerySerializer."""
+        data = {'username': 'sender1', 'designation': 'faculty', 'src_module': 'filetracking'}
+        s = DraftQuerySerializer(data=data)
+        self.assertTrue(s.is_valid())
+
+    def test_draft_query_serializer_missing_required(self):
+        """V-45: All fields required."""
+        data = {'username': 'sender1'}
+        s = DraftQuerySerializer(data=data)
+        self.assertFalse(s.is_valid())
+        self.assertIn('designation', s.errors)
+        self.assertIn('src_module', s.errors)
+
+    def test_archive_query_serializer_valid(self):
+        """V-45: Test the new ArchiveQuerySerializer."""
+        data = {'username': 'sender1', 'src_module': 'filetracking'}
+        s = ArchiveQuerySerializer(data=data)
+        self.assertTrue(s.is_valid())
+
+    def test_archive_query_serializer_missing_src_module(self):
+        """V-45: src_module is required."""
+        data = {'username': 'sender1'}
+        s = ArchiveQuerySerializer(data=data)
+        self.assertFalse(s.is_valid())
+        self.assertIn('src_module', s.errors)
+
+    def test_outbox_query_serializer_valid(self):
+        data = {'username': 'user1', 'src_module': 'filetracking'}
+        s = OutboxQuerySerializer(data=data)
+        self.assertTrue(s.is_valid())
 
 
 # ===========================================================================
@@ -470,6 +581,11 @@ class APIIntegrationTests(BaseTestCase):
         })
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
+    def test_view_drafts_api_missing_params(self):
+        """V-45: DraftFileView now validates query params."""
+        response = self.client.get('/filetracking/api/draft/', {})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
     def test_archive_api(self):
         file_id = services.create_file_via_sdk(
             uploader='sender1', uploader_designation='faculty',
@@ -489,6 +605,11 @@ class APIIntegrationTests(BaseTestCase):
         })
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
+    def test_view_archived_api_missing_params(self):
+        """V-45: ArchiveFileView now validates query params."""
+        response = self.client.get('/filetracking/api/archive/', {})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
     def test_designations_api_requires_auth(self):
         """V-21: GetDesignationsView now requires authentication."""
         unauth_client = APIClient()
@@ -501,12 +622,34 @@ class APIIntegrationTests(BaseTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn('faculty', response.data['designations'])
 
+    def test_forward_file_api_missing_params(self):
+        """Test ForwardFileView validation."""
+        file_id = services.create_file_via_sdk(
+            uploader='sender1', uploader_designation='faculty',
+            receiver='receiver1', receiver_designation='hod',
+            subject='Forward Test',
+        )
+        response = self.client.post(f'/filetracking/api/forwardfile/{file_id}/', {})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
 
 # ===========================================================================
-# Model Constants Tests (V-39)
+# Model Constants Tests (V-39, V-42)
 # ===========================================================================
 
 class ModelConstantsTests(TestCase):
 
     def test_max_file_size_bytes(self):
         self.assertEqual(MAX_FILE_SIZE_BYTES, 10 * 1024 * 1024)
+
+    def test_src_module_default(self):
+        self.assertEqual(SRC_MODULE_DEFAULT, 'filetracking')
+
+    def test_session_designation_key(self):
+        self.assertEqual(SESSION_DESIGNATION_KEY, 'currentDesignationSelected')
+
+    def test_session_designation_fallback(self):
+        self.assertEqual(SESSION_DESIGNATION_FALLBACK, 'default_value')
+
+    def test_pagination_page_size(self):
+        self.assertEqual(PAGINATION_PAGE_SIZE, 10)

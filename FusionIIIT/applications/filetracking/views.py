@@ -1,7 +1,7 @@
 # views.py
 # Thin web views for the filetracking module.
 # All business logic delegated to services.py, all queries to selectors.py.
-# Fixes: V-04–V-11, V-22–V-24, V-29–V-31, V-35, V-36, V-40, R-01–R-04
+# Fixes: V-04–V-11, V-22–V-24, V-29–V-31, V-35, V-36, V-40, V-43, V-44, V-46, R-01–R-04
 
 from django.db import IntegrityError  # V-29: was `from sqlite3 import IntegrityError`
 from django.http import HttpResponse, JsonResponse
@@ -17,7 +17,13 @@ from django.core.paginator import Paginator
 
 from datetime import datetime
 
-from .models import File, Tracking
+from applications.globals.models import Designation
+
+from .models import (
+    File, Tracking,
+    SRC_MODULE_DEFAULT, SESSION_DESIGNATION_KEY, SESSION_DESIGNATION_FALLBACK,
+    PAGINATION_PAGE_SIZE,
+)
 from . import services
 from . import selectors
 from .decorators import user_is_student, dropdown_designation_valid
@@ -60,7 +66,7 @@ def filetracking(request):
                 except User.DoesNotExist:  # V-30: specific exception
                     messages.error(request, 'Enter a valid Username')
                     return redirect('/filetracking/')
-                except Designation.DoesNotExist:  # V-30
+                except Designation.DoesNotExist:  # V-30, V-46: Designation now imported
                     messages.error(request, 'Enter a valid Designation')
                     return redirect('/filetracking/')
                 except ValidationError as e:
@@ -71,14 +77,12 @@ def filetracking(request):
             message = "FileID Already Taken.!!"
             return HttpResponse(message)
 
-    # V-40: Only fetch user's designations, not all objects
-    from applications.globals.models import Designation
-    designation_name = request.session.get('currentDesignationSelected', 'default_value')
+    # V-40, V-43: Uses selectors for all DB queries
+    designation_name = request.session.get(SESSION_DESIGNATION_KEY, SESSION_DESIGNATION_FALLBACK)
     hd_obj = selectors.get_holds_designation_obj(request.user, designation_name)
 
     context = {
-        'file': File.objects.select_related(
-            'uploader__user', 'uploader__department', 'designation').all(),
+        'file': selectors.get_all_files_with_related(),
         'extrainfo': selectors.get_extrainfo_by_user(request.user),
         'holdsdesignations': selectors.get_user_designations(request.user),
         'designation_name': designation_name,
@@ -108,7 +112,7 @@ def drafts_view(request, id):
     draft_files = services.view_drafts(
         username=user_hd.user,
         designation=user_hd.designation,
-        src_module='filetracking',
+        src_module=SRC_MODULE_DEFAULT,
     )
 
     for f in draft_files:
@@ -131,14 +135,14 @@ def drafts_view(request, id):
 @dropdown_designation_valid
 def outbox_view(request):
     """V-05: Delegates to services.view_outbox()."""
-    dropdown_design = request.session.get('currentDesignationSelected', 'default_value')
+    dropdown_design = request.session.get(SESSION_DESIGNATION_KEY, SESSION_DESIGNATION_FALLBACK)
     user_hd = selectors.get_holds_designation_obj(request.user, dropdown_design)
     designation = services.get_designation_display_name(user_hd)
 
     outward_files = services.view_outbox(
         username=user_hd.user,
         designation=user_hd.designation,
-        src_module='filetracking',
+        src_module=SRC_MODULE_DEFAULT,
     )
 
     for f in outward_files:
@@ -169,7 +173,7 @@ def outbox_view(request):
         except ValueError:
             outward_files = []
 
-    paginator = Paginator(outward_files, 10)
+    paginator = Paginator(outward_files, PAGINATION_PAGE_SIZE)
     page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
 
@@ -187,14 +191,14 @@ def outbox_view(request):
 @dropdown_designation_valid
 def inbox_view(request):
     """V-06: Delegates to services.view_inbox()."""
-    dropdown_design = request.session.get('currentDesignationSelected', 'default_value')
+    dropdown_design = request.session.get(SESSION_DESIGNATION_KEY, SESSION_DESIGNATION_FALLBACK)
     user_hd = selectors.get_holds_designation_obj(request.user, dropdown_design)
     designation = services.get_designation_display_name(user_hd)
 
     inward_files = services.view_inbox(
         username=user_hd.user,
         designation=user_hd.designation,
-        src_module='filetracking',
+        src_module=SRC_MODULE_DEFAULT,
     )
 
     for f in inward_files:
@@ -226,7 +230,7 @@ def inbox_view(request):
         except ValueError:
             inward_files = []
 
-    paginator = Paginator(inward_files, 10)
+    paginator = Paginator(inward_files, PAGINATION_PAGE_SIZE)
     page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
 
@@ -261,9 +265,8 @@ def inward(request):
 @user_is_student
 @dropdown_designation_valid
 def confirmdelete(request, id):
-    """Confirm deletion page."""
-    file = File.objects.select_related(
-        'uploader__user', 'uploader__department', 'designation').get(pk=id)
+    """Confirm deletion page. V-43: Uses selector."""
+    file = selectors.get_file_by_id_with_related(id)
     context = {'j': file}
     return render(request, 'filetracking/confirmdelete.html', context)
 
@@ -310,21 +313,20 @@ def archive_file_view(request, id):
 @user_is_student
 @dropdown_designation_valid
 def forward(request, id):
-    """V-07, R-02: Delegates forwarding logic to services.forward_file_from_view()."""
+    """V-07, R-02, V-44: Delegates forwarding logic to services."""
     file = get_object_or_404(File, id=id)
     track = selectors.get_tracking_for_file(file)
     designations = selectors.get_user_designations(request.user)
 
-    designation_name = request.session.get('currentDesignationSelected', 'default_value')
+    designation_name = request.session.get(SESSION_DESIGNATION_KEY, SESSION_DESIGNATION_FALLBACK)
     hd_obj = selectors.get_holds_designation_obj(request.user, designation_name)
     designation_id = hd_obj.id
 
     if request.method == "POST":
         if 'finish' in request.POST:
-            file.is_read = True
-            file.save()
+            services.mark_file_read(file)
         if 'send' in request.POST:
-            track.update(is_read=True)
+            services.mark_tracking_as_read(track)
             try:
                 services.forward_file_from_view(
                     file_obj=file,
@@ -345,7 +347,7 @@ def forward(request, id):
                     'notifications': request.user.notifications.all(), 'path_parent': 'inbox',
                 }
                 return render(request, 'filetracking/forward.html', context)
-            except Designation.DoesNotExist:  # V-30
+            except Designation.DoesNotExist:  # V-30, V-46
                 messages.error(request, 'Enter a valid Designation')
                 context = {
                     'designations': designations, 'file': file, 'track': track,
@@ -375,20 +377,19 @@ def archive_design(request):
 @user_is_student
 @dropdown_designation_valid
 def archive_view(request, id):
-    """Archive listing page."""
+    """Archive listing page. V-43: Uses selectors for DB queries."""
     user_hd = selectors.get_holds_designation_by_id(id)
     designation = services.get_designation_display_name(user_hd)
 
     archive_files = services.view_archived(
         username=user_hd.user,
         designation=user_hd.designation,
-        src_module='filetracking',
+        src_module=SRC_MODULE_DEFAULT,
     )
 
-    from applications.globals.models import Designation
     for f in archive_files:
         f['upload_date'] = parse_datetime(f['upload_date'])
-        f['designation'] = Designation.objects.get(id=f['designation'])
+        f['designation'] = selectors.get_designation_by_id(f['designation'])
         f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
 
     archive_files = services.add_uploader_department_to_files_list(archive_files)
@@ -406,8 +407,9 @@ def archive_view(request, id):
 @user_is_student
 @dropdown_designation_valid
 def archive_finish(request, id):
+    """View archive finish page. V-43: Uses selectors."""
     file1 = get_object_or_404(File, id=id)
-    track = Tracking.objects.filter(file_id=file1)
+    track = selectors.get_tracking_for_file(file1)
     return render(request, 'filetracking/archive_finish.html', {'file': file1, 'track': track})
 
 
@@ -440,23 +442,23 @@ def finish_fileview(request, id):
 @user_is_student
 @dropdown_designation_valid
 def finish(request, id):
+    """V-44: Business logic delegated to services.mark_file_as_finished()."""
     file1 = get_object_or_404(File, id=id)
-    track = Tracking.objects.filter(file_id=file1)
+    track = selectors.get_tracking_for_file(file1)
     if request.method == "POST":
         if 'Finished' in request.POST:
-            File.objects.filter(pk=id).update(is_read=True)
-            track.update(is_read=True)
+            services.mark_file_as_finished(id)
             messages.success(request, 'File Archived')
     context = {
         'file': file1, 'track': track, 'fileid': id,
         'notifications': request.user.notifications.all(),
     }
-    return render(request, 'filetracking/finish.html')
+    return render(request, 'filetracking/finish.html', context)
 
 
 @login_required(login_url="/accounts/login")  # V-22: Added @login_required
-def AjaxDropdown1(request):
-    """Designation autocomplete. V-22: Added @login_required."""
+def ajax_dropdown_designations(request):
+    """Designation autocomplete. V-22, V-46: Renamed from AjaxDropdown1."""
     if request.method == 'POST':
         value = request.POST.get('value')
         hold = selectors.get_designations_starting_with(value)
@@ -466,8 +468,8 @@ def AjaxDropdown1(request):
 
 
 @login_required(login_url="/accounts/login")  # V-22: Added @login_required
-def AjaxDropdown(request):
-    """Username autocomplete. V-22: Added @login_required."""
+def ajax_dropdown_users(request):
+    """Username autocomplete. V-22, V-46: Renamed from AjaxDropdown."""
     if request.method == 'POST':
         value = request.POST.get('value')
         users = selectors.get_users_starting_with(value)
@@ -550,12 +552,12 @@ def edit_draft_view(request, id, *args, **kwargs):
             except User.DoesNotExist:  # V-30
                 messages.error(request, 'Enter a valid destination')
                 return redirect(reverse('filetracking:filetracking'))
-            except Designation.DoesNotExist:  # V-30
+            except Designation.DoesNotExist:  # V-30, V-46
                 messages.error(request, 'Enter a valid Designation')
                 return redirect(reverse('filetracking:filetracking'))
 
     designations = selectors.get_user_designations(request.user)
-    designation_name = request.session.get('currentDesignationSelected', 'default_value')
+    designation_name = request.session.get(SESSION_DESIGNATION_KEY, SESSION_DESIGNATION_FALLBACK)
     hd_obj = selectors.get_holds_designation_obj(request.user, designation_name)
 
     remarks = None

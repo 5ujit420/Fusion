@@ -1,6 +1,7 @@
 # services.py
 # All business logic for the filetracking module.
-# Fixes: V-01, V-04–V-11, V-41, R-01, R-02, R-04, R-08
+# All DB read queries delegated to selectors.py.
+# Fixes: V-01, V-04–V-11, V-41, V-43, V-44, R-01, R-02, R-04, R-08
 
 import io
 import os
@@ -8,15 +9,17 @@ import logging
 import zipfile
 
 from django.core.exceptions import ValidationError
-from django.contrib.auth.models import User
+
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
-from applications.globals.models import Designation, HoldsDesignation, ExtraInfo
 from notification.views import file_tracking_notif
 
-from .models import File, Tracking, MAX_FILE_SIZE_BYTES
+from .models import (
+    File, Tracking, MAX_FILE_SIZE_BYTES, SRC_MODULE_DEFAULT,
+    SESSION_DESIGNATION_KEY, SESSION_DESIGNATION_FALLBACK,
+)
 from .api.serializers import FileSerializer, FileHeaderSerializer, TrackingSerializer
 from . import selectors
 
@@ -73,9 +76,7 @@ def save_draft_file(uploader_user, title, description, design_id, upload_file, r
 
     uploader = uploader_user.extrainfo
     holds_des = selectors.get_holds_designation_by_id(design_id)
-    designation = selectors.get_designation_by_name(
-        HoldsDesignation.objects.select_related('designation').get(id=design_id).designation.name
-    )
+    designation = holds_des.designation
 
     extra_json = {
         'remarks': remarks if remarks is not None else '',
@@ -101,11 +102,8 @@ def send_file(uploader_user, title, description, design_id, receiver_username,
     validate_file_size(upload_file)
 
     uploader = uploader_user.extrainfo
-    designation = Designation.objects.get(
-        id=HoldsDesignation.objects.select_related(
-            'user', 'working', 'designation'
-        ).get(id=design_id).designation_id
-    )
+    current_design = selectors.get_holds_designation_by_id(design_id)
+    designation = current_design.designation
 
     file_obj = File.objects.create(
         uploader=uploader,
@@ -116,12 +114,8 @@ def send_file(uploader_user, title, description, design_id, receiver_username,
     )
 
     current_id = uploader_user.extrainfo
-    current_design = HoldsDesignation.objects.select_related(
-        'user', 'working', 'designation'
-    ).get(id=design_id)
-
-    receiver_id = User.objects.get(username=receiver_username)
-    receive_design = Designation.objects.get(name=receiver_designation_name)
+    receiver_id = selectors.get_user_by_username(receiver_username)
+    receive_design = selectors.get_designation_by_name(receiver_designation_name)
 
     Tracking.objects.create(
         file_id=file_obj,
@@ -142,7 +136,7 @@ def send_file(uploader_user, title, description, design_id, receiver_username,
 # ---------------------------------------------------------------------------
 
 def create_file_via_sdk(uploader, uploader_designation, receiver, receiver_designation,
-                        subject="", description="", src_module="filetracking",
+                        subject="", description="", src_module=SRC_MODULE_DEFAULT,
                         src_object_id="", file_extra_JSON=None, attached_file=None):
     """
     Create a file + tracking entry (SDK create_file equivalent).
@@ -190,7 +184,7 @@ def create_file_via_sdk(uploader, uploader_designation, receiver, receiver_desig
     return new_file.id
 
 
-def create_draft_via_sdk(uploader, uploader_designation, src_module="filetracking",
+def create_draft_via_sdk(uploader, uploader_designation, src_module=SRC_MODULE_DEFAULT,
                          src_object_id="", file_extra_JSON=None, attached_file=None):
     """
     Create a draft (no Tracking). SDK create_draft equivalent.
@@ -329,8 +323,11 @@ def archive_file_with_auth(file_id, requesting_user):
     Archive a file after ownership check (V-10).
     Preserves logic from views.py L494-513.
     """
-    from django.shortcuts import get_object_or_404
-    file_obj = get_object_or_404(File, id=file_id)
+    try:
+        file_obj = selectors.get_file_by_id(file_id)
+    except File.DoesNotExist:
+        return False, 'File not found'
+
     current_owner = selectors.get_current_file_owner(file_id)
     file_uploader_user = file_obj.uploader.user
 
@@ -339,6 +336,32 @@ def archive_file_with_auth(file_id, requesting_user):
         file_obj.save()
         return True, 'File Archived'
     return False, 'Unauthorized access'
+
+
+def mark_file_as_finished(file_id):
+    """
+    Mark a file as finished (is_read=True) and all its tracking entries as read.
+    Extracted from views.py finish() (V-44).
+    """
+    File.objects.filter(pk=file_id).update(is_read=True)
+    Tracking.objects.filter(file_id=file_id).update(is_read=True)
+
+
+def mark_file_read(file_obj):
+    """
+    Mark a single file as read (is_read=True).
+    Extracted from views.py forward() finish action (V-44).
+    """
+    file_obj.is_read = True
+    file_obj.save()
+
+
+def mark_tracking_as_read(tracking_qs):
+    """
+    Mark all tracking entries in queryset as read.
+    Extracted from views.py forward() send action (V-44).
+    """
+    tracking_qs.update(is_read=True)
 
 
 # ---------------------------------------------------------------------------
@@ -367,14 +390,16 @@ def forward_file(file_id, receiver, receiver_designation, file_extra_JSON,
     Forward a file to a new recipient.
     Preserves exact logic from sdk/methods.py L245-284.
     """
+    validate_file_size(file_attachment)
+
     current_owner = selectors.get_current_file_owner(file_id)
     current_owner_designation = selectors.get_current_file_owner_designation(file_id)
-    current_owner_extra_info = ExtraInfo.objects.get(user=current_owner)
-    current_owner_holds_designation = HoldsDesignation.objects.get(
-        user=current_owner, designation=current_owner_designation
+    current_owner_extra_info = selectors.get_extrainfo_by_user(current_owner)
+    current_owner_holds_designation = selectors.get_holds_designation(
+        current_owner, current_owner_designation
     )
-    receiver_obj = User.objects.get(username=receiver)
-    receiver_designation_obj = Designation.objects.get(name=receiver_designation)
+    receiver_obj = selectors.get_user_by_username(receiver)
+    receiver_designation_obj = selectors.get_designation_by_name(receiver_designation)
 
     tracking_data = {
         'file_id': file_id,
@@ -404,12 +429,10 @@ def forward_file_from_view(file_obj, requesting_user, sender_design_id,
     Common logic shared by forward() and edit_draft_view().
     """
     current_id = requesting_user.extrainfo
-    current_design = HoldsDesignation.objects.select_related(
-        'user', 'working', 'designation'
-    ).get(id=sender_design_id)
+    current_design = selectors.get_holds_designation_by_id(sender_design_id)
 
-    receiver_id = User.objects.get(username=receiver_username)
-    receive_design = Designation.objects.get(name=receiver_designation_name)
+    receiver_id = selectors.get_user_by_username(receiver_username)
+    receive_design = selectors.get_designation_by_name(receiver_designation_name)
 
     Tracking.objects.create(
         file_id=file_obj,
@@ -448,8 +471,8 @@ def view_history_enriched(file_id):
     tracking_array = []
     for history in histories:
         temp_obj = history.copy()
-        temp_obj['receiver_id'] = User.objects.get(id=history['receiver_id']).username
-        temp_obj['receive_design'] = Designation.objects.get(id=history['receive_design']).name
+        temp_obj['receiver_id'] = selectors.get_user_by_id(history['receiver_id']).username
+        temp_obj['receive_design'] = selectors.get_designation_by_id(history['receive_design']).name
         tracking_array.append(temp_obj)
     return tracking_array
 
@@ -502,7 +525,7 @@ def get_file_view_permissions(file_id, requesting_user):
     Determine forward_enable and archive_enable flags.
     Preserves views.py L469-480.
     """
-    file_obj = File.objects.get(id=file_id)
+    file_obj = selectors.get_file_by_id(file_id)
     current_owner = selectors.get_current_file_owner(file_id)
     file_uploader = file_obj.uploader.user
 
@@ -533,8 +556,7 @@ def generate_file_download(file_id):
     Preserves views.py L1014-1073.
     Returns (zip_data_bytes, output_filename).
     """
-    from django.shortcuts import get_object_or_404
-    file_obj = get_object_or_404(File, id=file_id)
+    file_obj = selectors.get_file_by_id_with_related(file_id)
     track = selectors.get_tracking_for_file_by_id(file_id)
 
     buffer = io.BytesIO()
@@ -589,17 +611,10 @@ def generate_file_download(file_id):
 # Redirect helper  (R-04)
 # ---------------------------------------------------------------------------
 
-def get_designation_redirect_url(requesting_user, path_slug):
-    """
-    Build a redirect URL for designation-based pages (R-04).
-    Consolidates draft_design, outward, inward, archive_design.
-    """
-    dropdown_design = None  # Must be passed from session
-    raise NotImplementedError("Use get_designation_redirect_url_from_session instead")
-
-
 def get_designation_redirect_url_from_session(request, path_slug):
     """Build redirect URL from session designation."""
-    dropdown_design = request.session.get('currentDesignationSelected', 'default_value')
+    dropdown_design = request.session.get(
+        SESSION_DESIGNATION_KEY, SESSION_DESIGNATION_FALLBACK
+    )
     hd_obj = selectors.get_holds_designation_obj(request.user, dropdown_design)
     return f'/filetracking/{path_slug}/{hd_obj.id}'

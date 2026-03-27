@@ -1,7 +1,7 @@
 # api/views.py
 # Thin API views for the filetracking module.
 # All logic delegated to services.py, all queries to selectors.py.
-# Fixes: V-12–V-21, V-27, V-28, V-32–V-34
+# Fixes: V-12–V-21, V-27, V-28, V-32–V-34, V-44, V-45
 
 import logging
 
@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework.authentication import TokenAuthentication
 
-from ..models import File, Tracking, MAX_FILE_SIZE_BYTES
+from ..models import File, Tracking
 from .serializers import (
     FileCreateInputSerializer,
     DraftCreateInputSerializer,
@@ -18,6 +18,8 @@ from .serializers import (
     InboxQuerySerializer,
     OutboxQuerySerializer,
     ArchiveInputSerializer,
+    DraftQuerySerializer,
+    ArchiveQuerySerializer,
 )
 from .. import services
 
@@ -141,7 +143,7 @@ class ViewHistoryView(APIView):
 
 
 class ForwardFileView(APIView):
-    """V-17: Delegates to services.forward_file() with serializer validation."""
+    """V-17, V-44: Delegates to services.forward_file() with serializer validation."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
@@ -151,10 +153,6 @@ class ForwardFileView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         try:
             file_attachment = request.FILES.get('file_attachment')
-            if file_attachment and file_attachment.size > MAX_FILE_SIZE_BYTES:
-                return Response({'error': 'File size exceeds limit (10 MB)'},
-                                status=status.HTTP_400_BAD_REQUEST)
-
             new_tracking_id = services.forward_file(
                 int(file_id),
                 serializer.validated_data['receiver'],
@@ -194,16 +192,20 @@ class CreateDraftFile(APIView):
 
 
 class DraftFileView(APIView):
-    """V-19: Delegates to services.view_drafts(). Removed print() (V-34)."""
+    """V-19, V-45: Delegates to services.view_drafts() with serializer validation."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        username = request.query_params.get('username')
-        designation = request.query_params.get('designation')
-        src_module = request.query_params.get('src_module')
+        serializer = DraftQuerySerializer(data=request.query_params)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         try:
-            draft_files = services.view_drafts(username, designation, src_module)
+            draft_files = services.view_drafts(
+                username=serializer.validated_data['username'],
+                designation=serializer.validated_data['designation'],
+                src_module=serializer.validated_data['src_module'],
+            )
             return Response(draft_files, status=status.HTTP_200_OK)
         except Exception as e:
             logger.error(f"Error viewing drafts: {e}")
@@ -211,16 +213,20 @@ class DraftFileView(APIView):
 
 
 class ArchiveFileView(APIView):
-    """V-20: Delegates to services.view_archived()."""
+    """V-20, V-45: Delegates to services.view_archived() with serializer validation."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        username = request.query_params.get('username')
-        designation = request.query_params.get('designation', '')
-        src_module = request.query_params.get('src_module')
+        serializer = ArchiveQuerySerializer(data=request.query_params)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         try:
-            archived_files = services.view_archived(username, designation, src_module)
+            archived_files = services.view_archived(
+                username=serializer.validated_data['username'],
+                designation=serializer.validated_data.get('designation', ''),
+                src_module=serializer.validated_data['src_module'],
+            )
             return Response(archived_files, status=status.HTTP_200_OK)
         except Exception as e:
             logger.error(f"Error viewing archives: {e}")

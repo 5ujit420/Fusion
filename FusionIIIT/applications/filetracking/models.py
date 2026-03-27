@@ -5,9 +5,13 @@ from applications.globals.models import ExtraInfo, HoldsDesignation, Designation
 
 
 # ---------------------------------------------------------------------------
-# Constants  (V-39)
+# Constants  (V-39, V-42)
 # ---------------------------------------------------------------------------
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+SRC_MODULE_DEFAULT = 'filetracking'
+SESSION_DESIGNATION_KEY = 'currentDesignationSelected'
+SESSION_DESIGNATION_FALLBACK = 'default_value'
+PAGINATION_PAGE_SIZE = 10
 
 
 class File(models.Model):
