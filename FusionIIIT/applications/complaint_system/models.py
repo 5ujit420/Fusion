@@ -1,100 +1,125 @@
-# imports
 from django.db import models
 from django.utils import timezone
 
 from applications.globals.models import ExtraInfo
 
-# Class definations:
+
+STATUS_PENDING = 0
+STATUS_FORWARDED = 1
+STATUS_RESOLVED = 2
+STATUS_DECLINED = 3
 
 
 class Constants:
     AREA = (
-        ('hall-1', 'hall-1'),
-        ('hall-3', 'hall-3'),
-        ('hall-4', 'hall-4'),
-        ('library', 'CC1'),
-        ('computer center', 'CC2'),
-        ('core_lab', 'core_lab'),
-        ('LHTC', 'LHTC'),
-        ('NR2', 'NR2'),
-        ('NR3', 'NR3'),
-        ('Admin building', 'Admin building'),
-        ('Rewa_Residency', 'Rewa_Residency'),
-        ('Maa Saraswati Hostel', 'Maa Saraswati Hostel'),
-        ('Nagarjun Hostel', 'Nagarjun Hostel'),
-        ('Panini Hostel', 'Panini Hostel'),
-
+        ("hall-1", "hall-1"),
+        ("hall-3", "hall-3"),
+        ("hall-4", "hall-4"),
+        ("library", "CC1"),
+        ("computer center", "CC2"),
+        ("core_lab", "core_lab"),
+        ("LHTC", "LHTC"),
+        ("NR2", "NR2"),
+        ("NR3", "NR3"),
+        ("Admin building", "Admin building"),
+        ("Rewa_Residency", "Rewa_Residency"),
+        ("Maa Saraswati Hostel", "Maa Saraswati Hostel"),
+        ("Nagarjun Hostel", "Nagarjun Hostel"),
+        ("Panini Hostel", "Panini Hostel"),
     )
     COMPLAINT_TYPE = (
-        ('Electricity', 'Electricity'),
-        ('carpenter', 'carpenter'),
-        ('plumber', 'plumber'),
-        ('garbage', 'garbage'),
-        ('dustbin', 'dustbin'),
-        ('internet', 'internet'),
-        ('other', 'other'),
+        ("Electricity", "Electricity"),
+        ("carpenter", "carpenter"),
+        ("plumber", "plumber"),
+        ("garbage", "garbage"),
+        ("dustbin", "dustbin"),
+        ("internet", "internet"),
+        ("other", "other"),
     )
 
 
 class Caretaker(models.Model):
     staff_id = models.ForeignKey(ExtraInfo, on_delete=models.CASCADE)
-    area = models.CharField(choices=Constants.AREA, max_length=20, default='hall-3')
+    area = models.CharField(choices=Constants.AREA, max_length=20, default="hall-3")
     rating = models.IntegerField(default=0)
-    myfeedback = models.CharField(max_length=400, default='this is my feedback')
-    # no_of_comps = models.CharField(max_length=1000)
+    myfeedback = models.CharField(max_length=400, default="this is my feedback")
 
     def __str__(self):
-        return str(self.id) + '-' + str(self.area)
-    
+        return str(self.id) + "-" + str(self.area)
+
+
 class Warden(models.Model):
     staff_id = models.ForeignKey(ExtraInfo, on_delete=models.CASCADE)
-    area = models.CharField(choices=Constants.AREA, max_length=20, default='hall-1')
+    area = models.CharField(choices=Constants.AREA, max_length=20, default="hall-1")
     rating = models.IntegerField(default=0)
     myfeedback = models.CharField(max_length=400, default="No feedback yet")
 
     def __str__(self):
-        return str(self.staff_id) + '-' + str(self.area)
+        return str(self.staff_id) + "-" + str(self.area)
+
 
 class SectionIncharge(models.Model):
     staff_id = models.ForeignKey(ExtraInfo, on_delete=models.CASCADE)
-    work_type = models.CharField(choices=Constants.COMPLAINT_TYPE,
-                                   max_length=20, default='Electricity')
+    work_type = models.CharField(
+        choices=Constants.COMPLAINT_TYPE,
+        max_length=20,
+        default="Electricity",
+    )
 
     def __str__(self):
-        return str(self.id) + '-' + self.work_type
+        return str(self.id) + "-" + self.work_type
+
 
 class Workers(models.Model):
-    secincharge_id = models.ForeignKey(SectionIncharge, on_delete=models.CASCADE, null=True)
+    secincharge_id = models.ForeignKey(
+        SectionIncharge,
+        on_delete=models.CASCADE,
+        null=True,
+    )
     name = models.CharField(max_length=50)
     age = models.CharField(max_length=10)
     phone = models.BigIntegerField(blank=True)
-    worker_type = models.CharField(choices=Constants.COMPLAINT_TYPE,
-                                   max_length=20, default='internet')
+    worker_type = models.CharField(
+        choices=Constants.COMPLAINT_TYPE,
+        max_length=20,
+        default="internet",
+    )
 
     def __str__(self):
-        return str(self.id) + '-' + self.name
+        return str(self.id) + "-" + self.name
 
 
 class StudentComplain(models.Model):
     complainer = models.ForeignKey(ExtraInfo, on_delete=models.CASCADE)
     complaint_date = models.DateTimeField(default=timezone.now)
     complaint_finish = models.DateField(blank=True, null=True)
-    complaint_type = models.CharField(choices=Constants.COMPLAINT_TYPE,
-                                      max_length=20, default='internet')
+    complaint_type = models.CharField(
+        choices=Constants.COMPLAINT_TYPE,
+        max_length=20,
+        default="internet",
+    )
     location = models.CharField(max_length=20, choices=Constants.AREA)
     specific_location = models.CharField(max_length=50, blank=True)
     details = models.CharField(max_length=100)
-    status = models.IntegerField(default='0')
+    status = models.IntegerField(default=STATUS_PENDING)
     remarks = models.CharField(max_length=300, default="Pending")
-    flag = models.IntegerField(default='0')
+    flag = models.IntegerField(default=STATUS_PENDING)
     reason = models.CharField(max_length=100, blank=True, default="None")
     feedback = models.CharField(max_length=500, blank=True)
-    worker_id = models.ForeignKey(Workers, blank=True, null=True,on_delete=models.CASCADE)
+    worker_id = models.ForeignKey(
+        Workers,
+        blank=True,
+        null=True,
+        on_delete=models.CASCADE,
+    )
     upload_complaint = models.FileField(blank=True)
-    comment = models.CharField(max_length=100,  default="None")
-    #upload_resolved = models.FileField(blank=True,null=True)
-    upload_resolved = models.FileField(upload_to='resolved_complaints/', blank=True, null=True)
-    
+    comment = models.CharField(max_length=100, default="None")
+    upload_resolved = models.FileField(
+        upload_to="resolved_complaints/",
+        blank=True,
+        null=True,
+    )
+
     class meta:
         db_table = "complaint_system_student_complain"
 
@@ -106,16 +131,21 @@ class ServiceProvider(models.Model):
     ser_pro_id = models.ForeignKey(
         ExtraInfo,
         on_delete=models.CASCADE,
-        db_column="ser_pro_id_id"  # Map to the existing column
+        db_column="ser_pro_id_id",
     )
-    type = models.CharField(choices=Constants.COMPLAINT_TYPE, max_length=30,default='Electricity')
+    type = models.CharField(
+        choices=Constants.COMPLAINT_TYPE,
+        max_length=30,
+        default="Electricity",
+    )
 
     class Meta:
         db_table = "complaint_system_service_provider"
 
     def __str__(self):
-        return str(self.ser_pro_id) + '-' + str(self.type)
-    
+        return str(self.ser_pro_id) + "-" + str(self.type)
+
+
 class Complaint_Admin(models.Model):
     sup_id = models.ForeignKey(ExtraInfo, on_delete=models.CASCADE)
 
@@ -127,12 +157,16 @@ class ServiceAuthority(models.Model):
     ser_pro_id = models.ForeignKey(
         ExtraInfo,
         on_delete=models.CASCADE,
-        db_column="ser_auth_id_id"  # Map to the existing column
+        db_column="ser_auth_id_id",
     )
-    type = models.CharField(choices=Constants.COMPLAINT_TYPE, max_length=30,default='Electricity')
+    type = models.CharField(
+        choices=Constants.COMPLAINT_TYPE,
+        max_length=30,
+        default="Electricity",
+    )
 
     class Meta:
         db_table = "complaint_system_service_authority"
 
     def __str__(self):
-        return str(self.ser_pro_id) + '-' + str(self.type)
+        return str(self.ser_pro_id) + "-" + str(self.type)
