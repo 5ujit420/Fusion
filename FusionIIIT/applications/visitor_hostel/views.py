@@ -1,328 +1,84 @@
 import datetime
-from datetime import date
-import xlrd
-import os
-import sys
+import logging
 
-
-from django.core.files.storage import FileSystemStorage
-from django.views.decorators.csrf import csrf_exempt
-
-from Fusion import settings
-from applications.visitor_hostel.models import RoomDetail
-from django.contrib.auth.models import User
-
-from django.contrib import messages
-from django.contrib.auth import logout
-from django.contrib.auth.decorators import login_required
-from django.db.models import Q
-from django.http import HttpResponseRedirect
-from django.shortcuts import HttpResponse, get_object_or_404, redirect, render
-
-from applications.globals.models import *
-from applications.visitor_hostel.forms import *
-from applications.visitor_hostel.models import *
-from applications.complaint_system.models import Caretaker
-# from notification.views import visitor_hostel_caretaker_notif
 import numpy as np
+from django.contrib import messages
 from django.contrib.auth.models import User
-from django.http import JsonResponse
-from .models import BookingDetail  # Make sure to import your BookingDetail model
+from django.contrib.auth.decorators import login_required
+from django.db import transaction
+from django.db.models import Q
+from django.http import HttpResponseRedirect, JsonResponse
+from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.authentication import TokenAuthentication
-from rest_framework.decorators import api_view, permission_classes,authentication_classes
-from django.http import JsonResponse
-from .models import BookingDetail  # Make sure to import your BookingDetail model
-from django.utils import timezone
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.authentication import TokenAuthentication
-from rest_framework.decorators import api_view, permission_classes,authentication_classes
-
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET
-
-
-#----
-#account staments 
-from rest_framework.decorators import api_view, permission_classes, authentication_classes
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.authentication import TokenAuthentication
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from .models import Inventory, InventoryBill
-from .serializers import InventorySerializer, InventoryBillSerializer
 
-#income
-from rest_framework import generics
-from .models import BookingDetail
-from .serializers import BookingDetailSerializer
-#--
-
-
-
-# from .forms import InventoryForm
-
-# for notifications
+from applications.globals.models import ExtraInfo, HoldsDesignation
 from notification.views import visitors_hostel_notif
+
+from .models import Bill, BookingDetail, Inventory, InventoryBill, MealRecord, RoomDetail, VisitorDetail
+from .selectors import (
+    get_active_bookings_queryset,
+    get_api_completed_bookings_queryset,
+    get_available_rooms_between,
+    get_available_rooms_queryset,
+    get_booking_detail,
+    get_booking_range_bills,
+    get_booking_requests_queryset,
+    get_completed_bookings_queryset,
+    get_forwarded_booking_rooms_between,
+    get_inactive_bookings_queryset,
+    get_inventory_bill as get_inventory_bill_selector,
+    get_inventory_bills_queryset,
+    get_inventory_item as get_inventory_item_selector,
+    get_inventory_queryset,
+    get_overlapping_room_bookings,
+    get_room_by_number,
+    get_user_designation,
+)
+from .serializers import (
+    BookingForwardSerializer,
+    BookingRequestInputSerializer,
+    BookingUpdateSerializer,
+    CheckInSerializer,
+    CheckOutSerializer,
+    InventoryBillSerializer,
+    InventoryCheckoutSerializer,
+    InventoryMutationSerializer,
+    InventorySerializer,
+    RoomAvailabilitySerializer,
+)
+from .services import (
+    add_checkout_inventory_items,
+    add_inventory_item_and_bill,
+    build_booking_bill_response,
+    build_dashboard_context,
+    check_in_booking,
+    check_out_booking,
+    confirm_booking as confirm_booking_service,
+    create_booking_request,
+    forward_booking as forward_booking_service,
+    get_designation_user,
+    record_meal_for_visitor,
+    update_booking_details,
+    update_expired_pending_bookings,
+    update_inventory_item,
+)
 
 
 # main page showing dashboard of user
 
 @login_required(login_url='/accounts/login/')
 def visitorhostel(request):
-
-    # intenders
-    intenders = User.objects.all()
-    user = request.user
-    # intender = request.user.holds_designations.filter(designation__name = 'Intender').exists()
-    vhcaretaker = request.user.holds_designations.filter(
-        designation__name='VhCaretaker').exists()
-    vhincharge = request.user.holds_designations.filter(
-        designation__name='VhIncharge').exists()
-
-    # finding designation of user
-
-    user_designation = "student"
-    if vhincharge:
-        user_designation = "VhIncharge"
-    elif vhcaretaker:
-        user_designation = "VhCaretaker"
-    else:
-        user_designation = "Intender"
-
-    available_rooms = {}
-    forwarded_rooms = {}
-    cancel_booking_request = []
-
-    # bookings for intender view
-    if (user_designation == "Intender"):
-        all_bookings = BookingDetail.objects.select_related(
-            'intender', 'caretaker').all().order_by('booking_from')
-        pending_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(Q(status="Pending") | Q(
-            status="Forward"),  booking_to__gte=datetime.datetime.today(), intender=user).order_by('booking_from')
-        active_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(
-            status="CheckedIn", booking_to__gte=datetime.datetime.today(), intender=user).order_by('booking_from')
-        dashboard_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(Q(status="Pending") | Q(status="Forward") | Q(
-            status="Confirmed") | Q(status='Rejected'), booking_to__gte=datetime.datetime.today(), intender=user).order_by('booking_from')
-        # print(dashboard_bookings.booking_from)
-
-        visitors = {}
-        rooms = {}
-        for booking in active_bookings:
-            temp = range(2, booking.person_count + 1)
-            visitors[booking.id] = temp
-
-        for booking in active_bookings:
-            for room_no in booking.rooms.all():
-                temp2 = range(1, booking.number_of_rooms_alloted)
-                rooms[booking.id] = temp2
-
-        complete_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(
-            check_out__lt=datetime.datetime.today(), intender=user).order_by('booking_from').reverse()
-        canceled_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(
-            status="Canceled", intender=user).order_by('booking_from')
-        rejected_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(
-            status='Rejected', intender=user).order_by('booking_from')
-        cancel_booking_requested = BookingDetail.objects.select_related('intender', 'caretaker').filter(
-            status='CancelRequested', intender=user).order_by('booking_from')
-
-    else:  # booking for caretaker and incharge view
-        all_bookings = BookingDetail.objects.select_related(
-            'intender', 'caretaker').all().order_by('booking_from')
-        pending_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(
-            Q(status="Pending") | Q(status="Forward"), booking_to__gte=datetime.datetime.today()).order_by('booking_from')
-        active_bookings = BookingDetail.objects.filter(Q(status="Confirmed") | Q(
-            status="CheckedIn"), booking_to__gte=datetime.datetime.today()).select_related('intender', 'caretaker').order_by('booking_from')
-        cancel_booking_request = BookingDetail.objects.select_related('intender', 'caretaker').filter(
-            status="CancelRequested", booking_to__gte=datetime.datetime.today()).order_by('booking_from')
-        dashboard_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(Q(status="Pending") | Q(
-            status="Forward") | Q(status="Confirmed"), booking_to__gte=datetime.datetime.today()).order_by('booking_from')
-        print(dashboard_bookings)
-        visitors = {}
-        rooms = {}
-
-        # x = BookingDetail.objects.all().annotate(rooms_count=Count('rooms'))
-
-        c_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(
-            Q(status="Forward"),  booking_to__gte=datetime.datetime.today()).order_by('booking_from')
-
-        # number of visitors
-        for booking in active_bookings:
-            temp = range(2, booking.person_count + 1)
-            visitors[booking.id] = temp
-
-        # rooms alloted to booking
-        for booking in active_bookings:
-            for room_no in booking.rooms.all():
-                temp2 = range(2, booking.number_of_rooms_alloted + 1)
-                rooms[booking.id] = temp2
-                # print(booking.rooms.all())
-
-        complete_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(Q(status="Canceled") | Q(
-            status="Complete"), check_out__lt=datetime.datetime.today()).select_related().order_by('booking_from').reverse()
-        canceled_bookings = BookingDetail.objects.filter(status="Canceled").select_related(
-            'intender', 'caretaker').order_by('booking_from')
-        cancel_booking_requested = BookingDetail.objects.select_related('intender', 'caretaker').filter(
-            status='CancelRequested', booking_to__gte=datetime.datetime.today(), intender=user).order_by('booking_from')
-        rejected_bookings = BookingDetail.objects.select_related(
-            'intender', 'caretaker').filter(status='Rejected').order_by('booking_from')
-
-        # finding available room list for alloting rooms
-        for booking in pending_bookings:
-            booking_from = booking.booking_from
-            booking_to = booking.booking_to
-            temp1 = booking_details(booking_from, booking_to)
-            available_rooms[booking.id] = temp1
-
-        # forwarded rooms details
-        for booking in c_bookings:
-            booking_from = booking.booking_from
-            booking_to = booking.booking_to
-            temp2 = forwarded_booking_details(booking_from, booking_to)
-            forwarded_rooms[booking.id] = temp2
-        # print(available_rooms)
-        # print(forwarded_rooms)
-    # inventory data
-    inventory = Inventory.objects.all()
-    inventory_bill = InventoryBill.objects.select_related('item_name').all()
-    # completed booking bills
-
-    completed_booking_bills = {}
-    all_bills = Bill.objects.select_related()
-
-    current_balance = 0
-    for bill in all_bills:
-        completed_booking_bills[bill.id] = {'intender': str(bill.booking.intender), 'booking_from': str(
-            bill.booking.booking_from), 'booking_to': str(bill.booking.booking_to), 'total_bill': str(bill.meal_bill + bill.room_bill), 'bill_date': str(bill.bill_date)}
-        current_balance = current_balance+bill.meal_bill + bill.room_bill
-
-    for inv_bill in inventory_bill:
-        current_balance = current_balance - inv_bill.cost
-
-    active_visitors = {}
-    for booking in active_bookings:
-        if booking.status == 'CheckedIn':
-            for visitor in booking.visitor.all():
-                active_visitors[booking.id] = visitor
-
-    # edit_room_statusForm=RoomStatus.objects.filter(Q(status="UnderMaintenance") | Q(status="Available"))
-
-    previous_visitors = VisitorDetail.objects.all()
-
-    # ------------------------------------------------------------------------------------------------------------------------------
-    bills = {}
-
-    for booking in active_bookings:
-        if booking.status == 'CheckedIn':
-            rooms = booking.rooms.all()
-            days = (datetime.date.today() - booking.check_in).days
-            category = booking.visitor_category
-            person = booking.person_count
-
-            room_bill = 100
-            if days == 0:
-                days = 1
-
-            if category == 'A':
-                room_bill = 0
-            elif category == 'B':
-                for i in rooms:
-                    if i.room_type == 'SingleBed':
-                        room_bill = room_bill+days*400
-                    else:
-                        room_bill = room_bill+days*500
-            elif category == 'C':
-                for i in rooms:
-                    if i.room_type == 'SingleBed':
-                        room_bill = room_bill+days*800
-                    else:
-                        room_bill = room_bill+days*1000
-            else:
-                for i in rooms:
-                    if i.room_type == 'SingleBed':
-                        room_bill = room_bill+days*1400
-                    else:
-                        room_bill = room_bill+days*1600
-
-            mess_bill = 0
-            for visitor in booking.visitor.all():
-                meal = MealRecord.objects.select_related(
-                    'booking__intender', 'booking__caretaker', 'visitor').filter(booking_id=booking.id)
-
-                mess_bill1 = 0
-                for m in meal:
-                    if m.morning_tea != 0:
-                        mess_bill1 = mess_bill1+m.morning_tea*10
-                    if m.eve_tea != 0:
-                        mess_bill1 = mess_bill1+m.eve_tea*10
-                    if m.breakfast != 0:
-                        mess_bill1 = mess_bill1+m.breakfast*50
-                    if m.lunch != 0:
-                        mess_bill1 = mess_bill1+m.lunch*100
-                    if m.dinner != 0:
-                        mess_bill1 = mess_bill1+m.dinner*100
-
-                    mess_bill = mess_bill + mess_bill1
-
-            total_bill = mess_bill + room_bill
-
-            bills[booking.id] = {'mess_bill': mess_bill,
-                                 'room_bill': room_bill, 'total_bill': total_bill}
-
-   # print(available_rooms)
-    # -------------------------------------------------------------------------------------------------------------------------------
-
-    visitor_list = []
-    for b in dashboard_bookings:
-        count = 1
-        b_visitor_list = b.visitor.all()
-        for v in b_visitor_list:
-            if count == 1:
-                visitor_list.append(v)
-                count = count+1
-
-    return render(request, "vhModule/visitorhostel.html",
-                  {'all_bookings': all_bookings,
-                   'complete_bookings': complete_bookings,
-                   'pending_bookings': pending_bookings,
-                   'active_bookings': active_bookings,
-                   'canceled_bookings': canceled_bookings,
-                   'dashboard_bookings': dashboard_bookings,
-
-                   'bills': bills,
-                   # 'all_rooms_status' : all_rooms_status,
-                   'available_rooms': available_rooms,
-                   'forwarded_rooms': forwarded_rooms,
-                   # 'booked_rooms' : booked_rooms,
-                   # 'under_maintainence_rooms' : under_maintainence_rooms,
-                   # 'occupied_rooms' : occupied_rooms,
-                   'inventory': inventory,
-                   'inventory_bill': inventory_bill,
-                   'active_visitors': active_visitors,
-                   'intenders': intenders,
-                   'user': user,
-                   'visitors': visitors,
-                   'rooms': rooms,
-                   # 'num_rooms' : list(range(1, booking.number_of_rooms_alloted+1)),
-                   # 'num_rooms' :list(range(1, booking.number_of_rooms_alloted+1)),
-                   'previous_visitors': previous_visitors,
-                   'completed_booking_bills': completed_booking_bills,
-                   'current_balance': current_balance,
-                   'rejected_bookings': rejected_bookings,
-                   'cancel_booking_request': cancel_booking_request,
-                   'cancel_booking_requested': cancel_booking_requested,
-                   'user_designation': user_designation})
+    return render(request, "vhModule/visitorhostel.html", build_dashboard_context(request.user))
 
 #### NEW
-
-from django.utils import timezone
-
 def update_expired_bookings():
-    current_date = timezone.now().date()
-    expired_bookings = BookingDetail.objects.filter(
-        status='Pending',
-        booking_to__lt=current_date
-    )
-    expired_bookings.update(status='Expired')
+    update_expired_pending_bookings(timezone.now().date())
     
 @login_required
 @require_GET
@@ -349,54 +105,23 @@ def get_user_details(request):
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication])
 def get_booking_requests(request):
-    print("works? in the original request")
     update_expired_bookings()
-
-    # intenders
-    intenders = User.objects.all()
-    user = request.user
-    print("Intenders: ",intenders)
-    vhcaretaker = request.user.holds_designations.filter(
-        designation__name='VhCaretaker').exists()
-    vhincharge = request.user.holds_designations.filter(
-        designation__name='VhIncharge').exists()
-
-    # finding designation of user
-    user_designation = "Intender"
-    if vhincharge:
-        user_designation = "VhIncharge"
-    elif vhcaretaker:
-        user_designation = "VhCaretaker"
-
-    if request.method == 'GET':
-        print("User Designation: ", user_designation)
-        if user_designation in ["VhIncharge", "VhCaretaker"]:
-             # Fetch all bookings for VhIncharge and VhCaretaker
-            all_bookings = BookingDetail.objects.select_related('intender', 'caretaker').all()
-        else:
-            # Filter bookings by the authenticated user
-            all_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(intender=request.user)
-
-        # Serialize the queryset to a list of dictionaries
-        bookings_list = [
-            {
-                'id': booking.id,
-                'intender': booking.intender.first_name,
-                'email': booking.intender.email,
-                'bookingFrom': booking.booking_from.isoformat() if booking.booking_from else None,
-                'bookingTo': booking.booking_to.isoformat() if booking.booking_to else None,
-                'category': booking.visitor_category,
-                'modifiedCategory': booking.modified_visitor_category,
-                'status': booking.status,
-                'remarks': booking.remark,
-                'rooms': [room.room_number for room in booking.rooms.all()]
-            }
-            for booking in all_bookings
-        ]
-
-        return JsonResponse({'pending_bookings': bookings_list})
-    else:
-        return JsonResponse({'error': 'Invalid request method'}, status=400)
+    bookings_list = [
+        {
+            'id': booking.id,
+            'intender': booking.intender.first_name,
+            'email': booking.intender.email,
+            'bookingFrom': booking.booking_from.isoformat() if booking.booking_from else None,
+            'bookingTo': booking.booking_to.isoformat() if booking.booking_to else None,
+            'category': booking.visitor_category,
+            'modifiedCategory': booking.modified_visitor_category,
+            'status': booking.status,
+            'remarks': booking.remark,
+            'rooms': [room.room_number for room in booking.rooms.all()],
+        }
+        for booking in get_booking_requests_queryset(request.user)
+    ]
+    return JsonResponse({'pending_bookings': bookings_list})
 
 
 #@login_required(login_url='/accounts/login/')
@@ -417,55 +142,20 @@ def get_booking_requests(request):
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication])
 def get_active_bookings(request):
-    # intenders
-    intenders = User.objects.all()
-    user = request.user
-    vhcaretaker = request.user.holds_designations.filter(
-        designation__name='VhCaretaker').exists()
-    vhincharge = request.user.holds_designations.filter(
-        designation__name='VhIncharge').exists()
-
-    # finding designation of user
-    user_designation = "Intender"
-    if vhincharge:
-        user_designation = "VhIncharge"
-    elif vhcaretaker:
-        user_designation = "VhCaretaker"
-
-    if request.method == 'GET':
-        print("User Designation: ", user_designation)
-
-        if user_designation in ["VhIncharge", "VhCaretaker"]:
-            # Fetch all relevant bookings for VhCaretaker or VhIncharge
-            active_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(
-                Q(status="Forward") | Q(status="CheckedIn") | Q(status="Pending")| Q(status="Confirmed"),
-                booking_to__gte=date.today()
-            )
-        else:
-            # Fetch only the logged-in user's bookings
-            active_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(
-                Q(status="Forward") | Q(status="CheckedIn") | Q(status="Pending")| Q(status="Confirmed"),
-                booking_to__gte=date.today(),
-                intender=user
-            )
-        # Serialize the queryset to a list of dictionaries
-        bookings_list = [
-            {
-                'id': booking.id,
-                'intender': booking.intender.first_name,
-                'email': booking.intender.email,
-                'bookingFrom': booking.booking_from.isoformat() if booking.booking_from else None,
-                'bookingTo': booking.booking_to.isoformat() if booking.booking_to else None,
-                'category': booking.visitor_category,
-                'modifiedVisitorCategory': booking.modified_visitor_category,
-                'status': booking.status,
-            }
-            for booking in active_bookings
-        ]
-
-        return JsonResponse({'active_bookings': bookings_list})
-    else:
-        return JsonResponse({'error': 'Invalid request method'}, status=400)
+    bookings_list = [
+        {
+            'id': booking.id,
+            'intender': booking.intender.first_name,
+            'email': booking.intender.email,
+            'bookingFrom': booking.booking_from.isoformat() if booking.booking_from else None,
+            'bookingTo': booking.booking_to.isoformat() if booking.booking_to else None,
+            'category': booking.visitor_category,
+            'modifiedVisitorCategory': booking.modified_visitor_category,
+            'status': booking.status,
+        }
+        for booking in get_active_bookings_queryset(request.user)
+    ]
+    return JsonResponse({'active_bookings': bookings_list})
 
 
 
@@ -484,49 +174,20 @@ def get_active_bookings(request):
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication])
 def get_inactive_bookings(request):
-    # intenders
-    intenders = User.objects.all()
-    user = request.user
-    vhcaretaker = request.user.holds_designations.filter(
-        designation__name='VhCaretaker').exists()
-    vhincharge = request.user.holds_designations.filter(
-        designation__name='VhIncharge').exists()
-
-    # finding designation of user
-    user_designation = "Intender"
-    if vhincharge:
-        user_designation = "VhIncharge"
-    elif vhcaretaker:
-        user_designation = "VhCaretaker"
-
-    if request.method == 'GET':
-        print("User Designation: ", user_designation)
-
-        if user_designation in ["VhIncharge", "VhCaretaker"]:
-            # Fetch all cancelled bookings for VhCaretaker or VhIncharge
-            cancelled_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(Q(status="Canceled") | Q(status="Rejected"))
-        else:
-            # Filter cancelled bookings for the logged-in user (intender)
-            cancelled_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(Q(status="Canceled") | Q(status="Rejected"), intender=request.user)
-
-        # Serialize the queryset to a list of dictionaries
-        bookings_list = [
-            {
-                'id': booking.id,
-                'intender': booking.intender.first_name,
-                'email': booking.intender.email,
-                'bookingFrom': booking.booking_from.isoformat() if booking.booking_from else None,
-                'bookingTo': booking.booking_to.isoformat() if booking.booking_to else None,
-                'category': booking.visitor_category,
-                'modifiedCategory': booking.modified_visitor_category,
-                'status': booking.status,  # Optional, if you need to include it
-            }
-            for booking in cancelled_bookings
-        ]
-
-        return JsonResponse({'cancelled_bookings': bookings_list})
-    else:
-        return JsonResponse({'error': 'Invalid request method'}, status=400)
+    bookings_list = [
+        {
+            'id': booking.id,
+            'intender': booking.intender.first_name,
+            'email': booking.intender.email,
+            'bookingFrom': booking.booking_from.isoformat() if booking.booking_from else None,
+            'bookingTo': booking.booking_to.isoformat() if booking.booking_to else None,
+            'category': booking.visitor_category,
+            'modifiedCategory': booking.modified_visitor_category,
+            'status': booking.status,
+        }
+        for booking in get_inactive_bookings_queryset(request.user)
+    ]
+    return JsonResponse({'cancelled_bookings': bookings_list})
 
 
 # @login_required(login_url='/accounts/login/')
@@ -545,55 +206,19 @@ def get_inactive_bookings(request):
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication])
 def get_completed_bookings(request):
-    # intenders
-    intenders = User.objects.all()
-    user = request.user
-    vhcaretaker = request.user.holds_designations.filter(
-        designation__name='VhCaretaker').exists()
-    vhincharge = request.user.holds_designations.filter(
-        designation__name='VhIncharge').exists()
-
-    # Determine the user's designation
-    user_designation = "Intender"
-    if vhincharge:
-        user_designation = "VhIncharge"
-    elif vhcaretaker:
-        user_designation = "VhCaretaker"
-
-    if request.method == 'GET':
-        current_date = timezone.now().date()
-                # Fetch completed bookings based on the user's designation
-        if user_designation in ["VhIncharge", "VhCaretaker"]:
-            # For VhIncharge or VhCaretaker, fetch all completed bookings with status "CheckedOut"
-            completed_bookings = BookingDetail.objects.select_related('intender').filter(
-                status='CheckedOut',
-                booking_to__lt=current_date
-            )
-        else:
-            # For Intenders, fetch only their completed bookings with status "CheckedOut"
-            completed_bookings = BookingDetail.objects.select_related('intender').filter(
-                intender=request.user,
-                status='CheckedOut',
-                booking_to__lt=current_date
-            )
-
-        # Serialize the queryset to a list of dictionaries
-        bookings_list = [
-            {
-                'id': booking.id,
-                'intender': booking.intender.first_name,
-                'email': booking.intender.email,
-                'bookingFrom': booking.booking_from.isoformat() if booking.booking_from else None,
-                'bookingTo': booking.booking_to.isoformat() if booking.booking_to else None,
-                'checkOut': booking.check_out.isoformat() if booking.check_out else None,
-                'category': booking.visitor_category,
-            }
-            for booking in completed_bookings
-        ]
-
-        return JsonResponse({'completed_bookings': bookings_list})
-    else:
-        return JsonResponse({'error': 'Invalid request method'}, status=400)
+    bookings_list = [
+        {
+            'id': booking.id,
+            'intender': booking.intender.first_name,
+            'email': booking.intender.email,
+            'bookingFrom': booking.booking_from.isoformat() if booking.booking_from else None,
+            'bookingTo': booking.booking_to.isoformat() if booking.booking_to else None,
+            'checkOut': booking.check_out.isoformat() if booking.check_out else None,
+            'category': booking.visitor_category,
+        }
+        for booking in get_completed_bookings_queryset(request.user)
+    ]
+    return JsonResponse({'completed_bookings': bookings_list})
 
 
 @login_required(login_url='/accounts/login/')
@@ -611,80 +236,36 @@ def get_booking_form(request):
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication])
 def request_booking(request):
-    if request.method == 'POST':
-        try:
-            # Getting details from request form
-            intenders = User.objects.all()
-            user = request.user
-            # intender = request.POST.get('intender')
-            # user = User.objects.get(id=intenders)
-            print("jiihuhhih")
-            print("USER is: ", user)
-            booking_id = request.data.get('booking_id')  # Fixed field name
-            category = request.data.get('category')
-            person_count = request.data.get('number-of-people')
-            purpose_of_visit = request.data.get('purpose-of-visit')
-            booking_from = request.data.get('booking_from')
-            booking_to = request.data.get('booking_to')
-            booking_from_time = request.data.get('booking_from_time')
-            booking_to_time = request.data.get('booking_to_time')
-            remarks_during_booking_request = request.data.get('remarks_during_booking_request')
-            bill_to_be_settled_by = request.data.get('bill_settlement')
-            number_of_rooms = request.data.get('number-of-rooms')
-            intenders_list = list(intenders)
-            # print("INTENDERS :",intenders_list)
-            # Visitor details
-            visitor_name = request.data.get('visitor_name')
-            visitor_email = request.data.get('visitor_email')
-            visitor_phone = request.data.get('visitor_phone')
-            visitor_organization = request.data.get('visitor_organization')
-            visitor_address = request.data.get('visitor_address')
-            nationality = request.data.get('nationality')
-
-            # Fetching caretaker
-            care_taker = HoldsDesignation.objects.select_related('user', 'working', 'designation') \
-                .filter(designation__name="VhCaretaker").first()
-            care_taker_user = care_taker.user if care_taker else None
-
-            if care_taker_user:
-                # Create a VisitorDetail object for the visitor
-                visitor = VisitorDetail.objects.create(
-                    visitor_name=visitor_name,
-                    visitor_email=visitor_email,
-                    visitor_phone=visitor_phone,
-                    visitor_organization=visitor_organization,
-                    visitor_address=visitor_address,
-                    nationality=nationality,
-                )
-
-                # Create a BookingDetail object
-                booking = BookingDetail.objects.create(
-                    caretaker=care_taker_user,
-                    purpose=purpose_of_visit,
-                    intender=user,
-                    booking_from=booking_from,
-                    booking_to=booking_to,
-                    visitor_category=category,
-                    modified_visitor_category=category,
-                    person_count=person_count,
-                    arrival_time=booking_from_time,
-                    departure_time=booking_to_time,
-                    number_of_rooms=number_of_rooms,
-                    bill_to_be_settled_by=bill_to_be_settled_by,
-                    remark=remarks_during_booking_request,  # Correct field name
-                )
-                
-                # Associate visitor with the booking
-                booking.visitor.set([visitor])
-
-                return JsonResponse({'success': 'Booking successfully created', 'booking_id': booking.id})
-            else:
-                return JsonResponse({'error': 'Caretaker not found'}, status=400)
-
-        except Exception as e:
-            return JsonResponse({'error': str(e)}, status=400)
-
-    return JsonResponse({'error': 'Invalid request method'}, status=400)
+    serializer = BookingRequestInputSerializer(
+        data={
+            'booking_id': request.data.get('booking_id'),
+            'category': request.data.get('category'),
+            'number_of_people': request.data.get('number-of-people'),
+            'purpose_of_visit': request.data.get('purpose-of-visit'),
+            'booking_from': request.data.get('booking_from'),
+            'booking_to': request.data.get('booking_to'),
+            'booking_from_time': request.data.get('booking_from_time'),
+            'booking_to_time': request.data.get('booking_to_time'),
+            'remarks_during_booking_request': request.data.get('remarks_during_booking_request'),
+            'bill_settlement': request.data.get('bill_settlement'),
+            'number_of_rooms': request.data.get('number-of-rooms'),
+            'visitor_name': request.data.get('visitor_name'),
+            'visitor_email': request.data.get('visitor_email'),
+            'visitor_phone': request.data.get('visitor_phone'),
+            'visitor_organization': request.data.get('visitor_organization'),
+            'visitor_address': request.data.get('visitor_address'),
+            'nationality': request.data.get('nationality'),
+        }
+    )
+    if not serializer.is_valid():
+        return JsonResponse({'error': serializer.errors}, status=400)
+    try:
+        booking = create_booking_request(serializer.validated_data, request.user)
+        return JsonResponse({'success': 'Booking successfully created', 'booking_id': booking.id})
+    except ValueError as exc:
+        return JsonResponse({'error': str(exc)}, status=400)
+    except Exception as exc:
+        return JsonResponse({'error': str(exc)}, status=400)
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -846,7 +427,8 @@ def expire_pending_bookings(request):
 
 def get_booking_details(request, booking_id):
     try:
-        booking = BookingDetail.objects.select_related('intender').prefetch_related('visitor', 'rooms').get(id=booking_id)
+        booking = get_booking_detail(booking_id)
+        first_visitor = booking.visitor.first()
         booking_data = {
             'intenderUsername': booking.intender.username,
             'intenderEmail': booking.intender.email,
@@ -859,12 +441,12 @@ def get_booking_details(request, booking_id):
             'purpose': booking.purpose,
             'billToBeSettledBy': booking.bill_to_be_settled_by,
             'remarks': booking.remark,
-            'visitorName': booking.visitor.first().visitor_name if booking.visitor.exists() else '',
-            'visitorEmail': booking.visitor.first().visitor_email if booking.visitor.exists() else '',
-            'visitorPhone': booking.visitor.first().visitor_phone if booking.visitor.exists() else '',
-            'visitorOrganization': booking.visitor.first().visitor_organization if booking.visitor.exists() else '',
-            'visitorAddress': booking.visitor.first().visitor_address if booking.visitor.exists() else '',
-            'availableRooms': list(RoomDetail.objects.filter(room_status='Available').values('room_number'))
+            'visitorName': first_visitor.visitor_name if first_visitor else '',
+            'visitorEmail': first_visitor.visitor_email if first_visitor else '',
+            'visitorPhone': first_visitor.visitor_phone if first_visitor else '',
+            'visitorOrganization': first_visitor.visitor_organization if first_visitor else '',
+            'visitorAddress': first_visitor.visitor_address if first_visitor else '',
+            'availableRooms': list(get_available_rooms_queryset().values('room_number'))
         }
         return JsonResponse(booking_data)
     except BookingDetail.DoesNotExist:
@@ -893,8 +475,7 @@ def update_booking(request):
         number_of_rooms = request.POST.get('number-of-rooms')
 
         # remark = request.POST.get('remark')
-        booking = BookingDetail.objects.select_related(
-            'intender', 'caretaker').get(id=booking_id)
+        booking = get_booking_detail(booking_id)
         booking.person_count = person_count
         booking.number_of_rooms = number_of_rooms
         booking.booking_from = booking_from
@@ -907,14 +488,13 @@ def update_booking(request):
         #                                                     booking_from=booking_from,
         #                                                     booking_to=booking_to,
         #                                                     number_of_rooms=number_of_rooms)
-        booking = BookingDetail.objects.select_related(
-            'intender', 'caretaker').get(id=booking_id)
-        c_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(
+        booking = get_booking_detail(booking_id)
+        c_bookings = BookingDetail.objects.select_related('intender', 'caretaker').prefetch_related('rooms').filter(
             Q(status="Forward"),  booking_to__gte=datetime.datetime.today()).order_by('booking_from')
         for booking in c_bookings:
             booking_from = booking.booking_from
             booking_to = booking.booking_to
-            temp2 = forwarded_booking_details(booking_from, booking_to)
+            temp2 = get_forwarded_booking_rooms_between(booking_from, booking_to)
             forwarded_rooms[booking.id] = temp2
         return render(request, "visitorhostel/",
                       {
@@ -931,42 +511,18 @@ def update_booking(request):
 @authentication_classes([TokenAuthentication])
 @login_required(login_url='/accounts/login/')
 def confirm_booking_new(request):
-    if request.method == 'POST':
-        try:
-            booking_id = request.data.get('booking_id')
-            modified_category = request.data.get('modified_category')
-            rooms = request.data.get('rooms', [])
-            remarks = request.data.get('remarks')
-            action = request.data.get('action')
-
-            booking = BookingDetail.objects.select_related('intender', 'caretaker').get(id=booking_id)
-            if action == 'accept':
-                booking.status = 'Confirmed'
-            elif action == 'reject':
-                booking.status = 'Rejected'
-            booking.modified_visitor_category = modified_category
-            booking.remark = remarks
-
-            # Clear existing rooms and add new rooms
-            booking.rooms.clear()
-            for room in rooms:
-                room_object = RoomDetail.objects.get(room_number=room)
-                booking.rooms.add(room_object)
-            booking.number_of_rooms_alloted = len(rooms)
-            booking.save()
-
-            # Notification of booking confirmation or rejection
-            visitors_hostel_notif(request.user, booking.intender, 'booking_confirmation' if action == 'accept' else 'booking_rejection')
-
-            return JsonResponse({'success': f'Booking successfully {action}ed'})
-        except BookingDetail.DoesNotExist:
-            return JsonResponse({'error': 'Booking not found'}, status=404)
-        except RoomDetail.DoesNotExist:
-            return JsonResponse({'error': 'One or more rooms not found'}, status=404)
-        except Exception as e:
-            return JsonResponse({'error': str(e)}, status=400)
-    else:
-        return JsonResponse({'error': 'Invalid request method'}, status=400)
+    serializer = BookingForwardSerializer(data=request.data)
+    if not serializer.is_valid():
+        return JsonResponse({'error': serializer.errors}, status=400)
+    try:
+        confirm_booking_service(request_user=request.user, **serializer.validated_data)
+        return JsonResponse({'success': f"Booking successfully {serializer.validated_data.get('action')}ed"})
+    except BookingDetail.DoesNotExist:
+        return JsonResponse({'error': 'Booking not found'}, status=404)
+    except RoomDetail.DoesNotExist:
+        return JsonResponse({'error': 'One or more rooms not found'}, status=404)
+    except Exception as exc:
+        return JsonResponse({'error': str(exc)}, status=400)
 
 
 # confirm booking by VhIncharge
@@ -1091,39 +647,16 @@ def reject_booking(request):
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication])
 def check_in(request):
-    if request.method == 'POST':
-        booking_id = request.data.get('booking_id')
-        visitor_name = request.data.get('name')
-        visitor_phone = request.data.get('phone')
-        visitor_email = request.data.get('email')
-        visitor_address = request.data.get('address')
-        check_in_date = datetime.date.today()
-        check_in_time = request.data.get('check_in_time')
-
-        try:
-            # Save visitor details
-            visitor = VisitorDetail.objects.create(
-                visitor_phone=visitor_phone,
-                visitor_name=visitor_name,
-                visitor_email=visitor_email,
-                visitor_address=visitor_address
-            )
-
-            # Update booking details
-            booking = BookingDetail.objects.select_related('intender', 'caretaker').get(id=booking_id)
-            booking.status = "CheckedIn"
-            booking.check_in = check_in_date
-            booking.check_in_time = check_in_time
-            booking.visitor.add(visitor)
-            booking.save()
-
-            return Response({'status': 'visitor checked in'})
-        except BookingDetail.DoesNotExist:
-            return Response({'error': 'Booking not found'}, status=404)
-        except Exception as e:
-            return Response({'error': str(e)}, status=400)
-    else:
-        return Response({'error': 'Invalid request method'}, status=400)
+    serializer = CheckInSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response({'error': serializer.errors}, status=400)
+    try:
+        check_in_booking(serializer.validated_data['booking_id'], serializer.validated_data)
+        return Response({'status': 'visitor checked in'})
+    except BookingDetail.DoesNotExist:
+        return Response({'error': 'Booking not found'}, status=404)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=400)
 
 # @login_required(login_url='/accounts/login/')
 # def check_in(request):
@@ -1158,114 +691,34 @@ def check_in(request):
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication])
 def check_out(request):
-    if request.method == 'POST':
-        booking_id = request.data.get('booking_id')
-        meal_bill = request.data.get('meal_bill')
-        room_bill = request.data.get('room_bill')
-        checkout_date = datetime.date.today()
-        checkout_time = request.data.get('check_out_time')
-
-        try:
-            # Update booking details
-            booking = BookingDetail.objects.select_related('intender', 'caretaker').get(id=booking_id)
-            booking.status = "Complete"
-            booking.check_out = checkout_date
-            booking.check_out_time = checkout_time  # Update check-out time
-            booking.save()
-
-            # Create a bill for the booking
-            # Bill.objects.create(
-            #     booking=booking,
-            #     meal_bill=meal_bill,
-            #     room_bill=room_bill,
-            #     caretaker=request.user,
-            #     payment_status=True,
-            #     bill_date=checkout_date
-            # )
-
-            return Response({'status': 'visitor checked out', 'check_out_time': checkout_time})
-        except BookingDetail.DoesNotExist:
-            return Response({'error': 'Booking not found'}, status=404)
-        except Exception as e:
-            return Response({'error': str(e)}, status=400)
-    else:
-        return Response({'error': 'Invalid request method'}, status=400)
+    serializer = CheckOutSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response({'error': serializer.errors}, status=400)
+    try:
+        check_out_booking(serializer.validated_data['booking_id'], serializer.validated_data.get('check_out_time'))
+        return Response({'status': 'visitor checked out', 'check_out_time': serializer.validated_data.get('check_out_time')})
+    except BookingDetail.DoesNotExist:
+        return Response({'error': 'Booking not found'}, status=404)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=400)
     
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication])
 def check_out_with_inventory(request):
-    if request.method == 'POST':
-        booking_id = request.data.get('booking_id')
-        inventory_items = request.data.get('inventory_items', [])
-        meal_bill = request.data.get('meal_bill', 0)
-        room_bill = request.data.get('room_bill', 0)
-        checkout_date = datetime.date.today()
-        checkout_time = request.data.get('check_out_time')
-
-        try:
-            # Update booking details
-            booking = BookingDetail.objects.select_related('intender', 'caretaker').get(id=booking_id)
-            booking.status = "Complete"
-            booking.check_out = checkout_date
-            booking.check_out_time = checkout_time  # Update check-out time
-            booking.save()
-
-            # Add inventory items to the database
-            for item in inventory_items:
-                item_name = item.get('name')
-                quantity = item.get('quantity', 0)
-                cost = item.get('cost', 0)
-
-                # Check if the inventory item already exists
-                inventory_item = Inventory.objects.filter(item_name=item_name).first()
-                if inventory_item:
-                    # Update existing inventory item
-                    inventory_item.quantity += quantity
-                    inventory_item.save()
-                else:
-                    # Create a new inventory item
-                    inventory_data = {
-                        'item_name': item_name,
-                        'quantity': quantity,
-                        'consumable': True,  # Assuming all items are consumable
-                        'total_usable': cost,
-                    }
-                    inventory_serializer = InventorySerializer(data=inventory_data)
-                    if inventory_serializer.is_valid():
-                        inventory_item = inventory_serializer.save()
-                    else:
-                        return Response(inventory_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-                # Create an inventory bill
-                bill_data = {
-                    'item_name': inventory_item.id,  # Link to inventory item
-                    'bill_number': f"INV-{booking_id}-{item_name[:3].upper()}",
-                    'cost': cost,
-                }
-                bill_serializer = InventoryBillSerializer(data=bill_data)
-                if bill_serializer.is_valid():
-                    bill_serializer.save()
-                else:
-                    return Response(bill_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-            # Optionally, create a bill for the booking
-            # Bill.objects.create(
-            #     booking=booking,
-            #     meal_bill=meal_bill,
-            #     room_bill=room_bill,
-            #     caretaker=request.user,
-            #     payment_status=True,
-            #     bill_date=checkout_date
-            # )
-
-            return Response({'status': 'visitor checked out and inventory updated', 'check_out_time': checkout_time})
-        except BookingDetail.DoesNotExist:
-            return Response({'error': 'Booking not found'}, status=404)
-        except Exception as e:
-            return Response({'error': str(e)}, status=400)
-    else:
-        return Response({'error': 'Invalid request method'}, status=400)
+    serializer = InventoryCheckoutSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response({'error': serializer.errors}, status=400)
+    try:
+        booking_id = serializer.validated_data['booking_id']
+        check_out_time = serializer.validated_data.get('check_out_time')
+        check_out_booking(booking_id, check_out_time)
+        add_checkout_inventory_items(booking_id, serializer.validated_data.get('inventory_items', []))
+        return Response({'status': 'visitor checked out and inventory updated', 'check_out_time': check_out_time})
+    except BookingDetail.DoesNotExist:
+        return Response({'error': 'Booking not found'}, status=404)
+    except Exception as exc:
+        return Response({'error': str(exc)}, status=400)
 # @login_required(login_url='/accounts/login/')
 # def check_out(request):
 #     user = get_object_or_404(User, username=request.user.username)
@@ -1325,46 +778,17 @@ def record_meal(request):
 
             id = request.POST.get('pk')
             booking_id = request.POST.get('booking')
-            booking = BookingDetail.objects.select_related(
-                'intender', 'caretaker').get(id=booking_id)
-            visitor = VisitorDetail.objects.get(id=id)
-            date_1 = datetime.datetime.today()
-            print(id, booking_id, booking, visitor, date_1)
-            m_tea = request.POST.get("m_tea")
-            breakfast = request.POST.get("breakfast")
-            lunch = request.POST.get("lunch")
-            eve_tea = request.POST.get("eve_tea")
-            dinner = request.POST.get("dinner")
-
-            person = 1
-            print("bid: ", id)
-            
-            try:
-                meal = MealRecord.objects.select_related('booking__intender', 'booking__caretaker', 'visitor').get(
-                    visitor=visitor, booking=booking, meal_date=date_1)
-            except:
-                meal = False
-
-            if meal:
-                meal.morning_tea += int(m_tea)
-                meal.eve_tea += int(eve_tea)
-                meal.breakfast += int(breakfast)
-                meal.lunch += int(lunch)
-                meal.dinner += int(dinner)
-                meal.save()
-                return HttpResponseRedirect('/visitorhostel/')
-
-            else:
-                MealRecord.objects.create(visitor=visitor,
-                                          booking=booking,
-                                          morning_tea=m_tea,
-                                          eve_tea=eve_tea,
-                                          meal_date=date_1,
-                                          breakfast=breakfast,
-                                          lunch=lunch,
-                                          dinner=dinner,
-                                          persons=person)
-
+            record_meal_for_visitor(
+                booking_id=booking_id,
+                visitor_id=id,
+                meal_payload={
+                    "m_tea": request.POST.get("m_tea"),
+                    "breakfast": request.POST.get("breakfast"),
+                    "lunch": request.POST.get("lunch"),
+                    "eve_tea": request.POST.get("eve_tea"),
+                    "dinner": request.POST.get("dinner"),
+                },
+            )
             return HttpResponseRedirect('/visitorhostel/')
         else:
             return HttpResponseRedirect('/visitorhostel/')
@@ -1408,22 +832,18 @@ def bill_generation(request):
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication])
 def room_availabity_new(request):
-    if request.method == 'POST':
-        date_1 = request.data.get('start_date')
-        date_2 = request.data.get('end_date')
-        available_rooms_list = []
-
-        available_rooms_bw_dates = booking_details(date_1, date_2)
-
-        for room in available_rooms_bw_dates:
-            available_rooms_list.append(room.room_number)
-
-        available_rooms_array = np.asarray(available_rooms_list)
-        
-        # Return available rooms in a JSON response
-        return JsonResponse({'available_rooms': available_rooms_array.tolist()})
-    else:
-        return JsonResponse({'error': 'Invalid request method'}, status=400)
+    serializer = RoomAvailabilitySerializer(data=request.data)
+    if not serializer.is_valid():
+        return JsonResponse({'error': serializer.errors}, status=400)
+    available_rooms_list = [
+        room.room_number
+        for room in get_available_rooms_between(
+            serializer.validated_data['start_date'],
+            serializer.validated_data['end_date'],
+        )
+    ]
+    available_rooms_array = np.asarray(available_rooms_list)
+    return JsonResponse({'available_rooms': available_rooms_array.tolist()})
 
 # get available rooms list between date range
 
@@ -1434,7 +854,7 @@ def room_availabity(request):
         date_1 = request.POST.get('start_date')
         date_2 = request.POST.get('end_date')
         available_rooms_list = []
-        available_rooms_bw_dates = booking_details(date_1, date_2)
+        available_rooms_bw_dates = get_available_rooms_between(date_1, date_2)
         # print("Available rooms are ")
         for room in available_rooms_bw_dates:
             available_rooms_list.append(room.room_number)
@@ -1466,7 +886,6 @@ def check_partial_booking(request):
         start_date = datetime.datetime.strptime(date_1, "%Y-%m-%d").date()
         end_date = datetime.datetime.strptime(date_2, "%Y-%m-%d").date()
 
-        # Fetch all rooms
         rooms = RoomDetail.objects.all()
         response_data = []
 
@@ -1476,13 +895,7 @@ def check_partial_booking(request):
             room_type = room.room_type
 
             # Check for existing bookings for the given room
-            overlapping_bookings = BookingDetail.objects.filter(
-                rooms__id=room_id,
-                booking_from__lt=end_date,
-                booking_to__gt=start_date,
-                status__in=["Confirmed", "CheckedIn"]
-
-            ).order_by('booking_from')
+            overlapping_bookings = get_overlapping_room_bookings(room_id, start_date, end_date)
 
             # Initialize response data
             partial_available = False
@@ -1526,23 +939,17 @@ def check_partial_booking(request):
 @login_required(login_url='/accounts/login/')
 def add_to_inventory(request):
     if request.method == 'POST':
-        item_name = request.POST.get('item_name')
-        bill_number = request.POST.get('bill_number')
-        quantity = int((request.POST.get('quantity')))
-        cost = int(request.POST.get('cost'))
-        consumable = request.POST.get('consumable')
-        if consumable == 'false':
-            isConsumable = False
-        else:
-            isConsumable = True
-        print(isConsumable)
-        x = Inventory.objects.create(
-            item_name=item_name, quantity=quantity, consumable=isConsumable)
-        print(x.pk)
-        item = Inventory.objects.get(pk=x.pk)
-        item_id = item.pk
-        InventoryBill.objects.create(
-            bill_number=bill_number, cost=cost, item_name_id=item_id)
+        serializer = InventoryMutationSerializer(
+            data={
+                'item_name': request.POST.get('item_name'),
+                'bill_number': request.POST.get('bill_number'),
+                'quantity': request.POST.get('quantity'),
+                'cost': request.POST.get('cost'),
+                'consumable': request.POST.get('consumable') != 'false',
+            }
+        )
+        if serializer.is_valid():
+            add_inventory_item_and_bill(serializer.validated_data)
         return HttpResponseRedirect('/visitorhostel/')
     else:
         return HttpResponseRedirect('/visitorhostel/')
@@ -1553,12 +960,7 @@ def update_inventory(request):
     if request.method == 'POST':
         id = request.POST.get('id')
         quantity = int(request.POST.get('quantity'))
-        if quantity < 0:
-            quantity = 1
-        if quantity == 0:
-            Inventory.objects.filter(id=id).delete()
-        else:
-            Inventory.objects.filter(id=id).update(quantity=quantity)
+        update_inventory_item(id, quantity)
         return HttpResponseRedirect('/visitorhostel/')
     else:
         return HttpResponseRedirect('/visitorhostel/')
@@ -1569,8 +971,8 @@ def edit_room_status(request):
     if request.method == 'POST':
         room_number = request.POST.get('room_number')
         room_status = request.POST.get('room_status')
-        room = RoomDetail.objects.get(room_number=room_number)
-        RoomDetail.objects.filter(room_id=room).update(status=room_status)
+        room = get_room_by_number(room_number)
+        RoomDetail.objects.filter(id=room.id).update(room_status=room_status)
         return HttpResponseRedirect('/visitorhostel/')
     else:
         return HttpResponseRedirect('/visitorhostel/')
@@ -1607,65 +1009,17 @@ def bill_between_dates(request):
 
 
 def bill_range(date1, date2):
-
-    bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(Q(booking_from__lte=date1, booking_to__gte=date1) | Q(booking_from__gte=date1,
-                                                                                                                                          booking_to__lte=date2) | Q(booking_from__lte=date2, booking_to__gte=date2) | Q(booking_from__lte=date1, booking_to__gte=date1) | Q(booking_from__gte=date1, booking_to__lte=date2) | Q(booking_from__lte=date2, booking_to__gte=date2))
-    # bill_details = Bill.objects.filter(Q(booking__booking_from__lte=date1, booking__booking_to__gte=date1, booking__status="Confirmed") | Q(booking__booking_from__gte=date1,
-    #                                                                                                                   booking__booking_to__lte=date2, booking__status="Confirmed") | Q(booking__booking_from__lte=date2, booking__booking_to__gte=date2, status="Confirmed") | Q(booking_from__lte=date1, booking__booking_to__gte=date1, status="CheckedIn") | Q(booking__booking_from__gte=date1, booking__booking_to__lte=date2, booking__status="CheckedIn") | Q(booking__booking_from__lte=date2, booking__booking_to__gte=date2, booking__status="CheckedIn"))
-    bookings_bw_dates = []
-    booking_ids = []
-    for booking_id in bookings:
-        booking_ids.append(booking_id.id)
-
-    all_bill = Bill.objects.select_related('caretaker').all().order_by('-id')
-
-    for b_id in booking_ids:
-        if Bill.objects.select_related('caretaker').filter(booking__pk=b_id).exists():
-            bill_id = Bill.objects.select_related(
-                'caretaker').get(booking__pk=b_id)
-            bookings_bw_dates.append(bill_id)
-
-    return bookings_bw_dates
+    return get_booking_range_bills(date1, date2)
 
 
 def booking_details(date1, date2):
-
-    bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(Q(booking_from__lte=date1, booking_to__gte=date1, status="Confirmed") | Q(booking_from__gte=date1,
-                                                                                                                                                              booking_to__lte=date2, status="Confirmed") | Q(booking_from__lte=date2, booking_to__gte=date2, status="Confirmed") | Q(booking_from__lte=date1, booking_to__gte=date1, status="Forward") | Q(booking_from__gte=date1,
-                                                                                                                                                                                                                                                                                                                                                           booking_to__lte=date2, status="Forward") | Q(booking_from__lte=date2, booking_to__gte=date2, status="Forward") | Q(booking_from__lte=date1, booking_to__gte=date1, status="CheckedIn") | Q(booking_from__gte=date1, booking_to__lte=date2, status="CheckedIn") | Q(booking_from__lte=date2, booking_to__gte=date2, status="CheckedIn"))
-
-    booked_rooms = []
-    for booking in bookings:
-        for room in booking.rooms.all():
-            booked_rooms.append(room)
-
-    available_rooms = []
-    all_rooms = RoomDetail.objects.all()
-    for room in all_rooms:
-        if room not in booked_rooms:
-            available_rooms.append(room)
-
-    return available_rooms
+    return get_available_rooms_between(date1, date2)
 
 # function for finding forwarded booking rooms
 
 
 def forwarded_booking_details(date1, date2):
-
-    bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(Q(booking_from__lte=date1, booking_to__gte=date1, status="Confirmed") | Q(booking_from__gte=date1,
-                                                                                                                                                              booking_to__lte=date2, status="Confirmed") | Q(booking_from__lte=date2, booking_to__gte=date2, status="Confirmed") | Q(booking_from__lte=date1, booking_to__gte=date1, status="CheckedIn") | Q(booking_from__gte=date1, booking_to__lte=date2, status="CheckedIn") | Q(booking_from__lte=date2, booking_to__gte=date2, status="CheckedIn"))
-    forwarded_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(Q(booking_from__lte=date1, booking_to__gte=date1, status="Forward") | Q(booking_from__gte=date1,
-                                                                                                                                                                      booking_to__lte=date2, status="Forward") | Q(booking_from__lte=date2, booking_to__gte=date2, status="Forward"))
-    booked_rooms = []
-
-    # Bookings for rooms which are forwarded but not yet approved
-
-    forwarded_booking_rooms = []
-    for booking in forwarded_bookings:
-        for room in booking.rooms.all():
-            forwarded_booking_rooms.append(room)
-
-    return forwarded_booking_rooms
+    return get_forwarded_booking_rooms_between(date1, date2)
 
 
 # View for forwarding booking - from VhCaretaker to VhIncharge
@@ -1680,165 +1034,61 @@ def forward_booking(request):
         rooms = request.POST.getlist('rooms[]')
         remark = request.POST.get('remark')
         print(rooms)
-        BookingDetail.objects.select_related('intender', 'caretaker').filter(
-            id=booking_id).update(status="Forward", remark=remark)
-        booking = BookingDetail.objects.select_related(
-            'intender', 'caretaker').get(id=booking_id)
-        bd = BookingDetail.objects.select_related(
-            'intender', 'caretaker').get(id=booking_id)
-        bd.modified_visitor_category = modified_category
-
-        count_rooms = 0
-        for room in rooms:
-            count_rooms = count_rooms + 1
-            room_object = RoomDetail.objects.get(room_number=room)
-            bd.rooms.add(room_object)
-        bd.number_of_rooms_alloted = count_rooms
-        bd.save()
+        forward_booking_service(
+            booking_id=booking_id,
+            modified_category=modified_category,
+            rooms=rooms,
+            remarks=remark,
+            request_user=request.user,
+            notify_index=1,
+        )
 
         dashboard_bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(Q(status="Pending") | Q(status="Forward") | Q(
             status="Confirmed") | Q(status='Rejected'), booking_to__gte=datetime.datetime.today(), intender=user).order_by('booking_from')
 
         # return render(request, "vhModule/visitorhostel.html",
         #           {'dashboard_bookings' : dashboard_bookings})
-        incharge_name = HoldsDesignation.objects.select_related(
-            'user', 'working', 'designation').filter(designation__name="VhIncharge")[1]
-
-        # notify incharge about forwarded booking
-        visitors_hostel_notif(
-            request.user, incharge_name.user, 'booking_forwarded')
         return HttpResponseRedirect('/visitorhostel/')
     else:
         return HttpResponseRedirect('/visitorhostel/')
 
-import logging  
 logger = logging.getLogger(__name__)
 @csrf_exempt
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication])
 def forward_booking_new(request):
+    serializer = BookingForwardSerializer(data=request.data)
+    if not serializer.is_valid():
+        return JsonResponse({'error': serializer.errors}, status=400)
     try:
-        booking_id = request.data.get('booking_id')
-        modified_category = request.data.get('modified_category')
-        rooms = request.data.get('rooms', [])
-        remarks = request.data.get('remarks')
-
-        logger.info(f"Received rooms: {rooms}")
-
-        booking = BookingDetail.objects.select_related('intender', 'caretaker').get(id=booking_id)
-        booking.status = "Forward"
-        booking.modified_visitor_category = modified_category
-        booking.remark = remarks
-
-        # Clear existing rooms and add new rooms
-        booking.rooms.clear()
-        for room in rooms:
-            try:
-                room_object = RoomDetail.objects.get(room_number=room)
-                booking.rooms.add(room_object)
-            except RoomDetail.DoesNotExist:
-                logger.error(f"Room {room} does not exist")
-                return JsonResponse({'error': f'Room {room} not found'}, status=404)
-        booking.number_of_rooms_alloted = len(rooms)
-        booking.save()
-
-        # Notify the VhIncharge about the forwarded booking
-        incharge_designations = HoldsDesignation.objects.select_related(
-            'user', 'working', 'designation').filter(designation__name="VhIncharge")
-        
-        if not incharge_designations.exists():
-            return JsonResponse({'error': 'VhIncharge not found'}, status=404)
-        
-        incharge_name = incharge_designations.first()
-        visitors_hostel_notif(request.user, incharge_name.user, 'booking_forwarded')
-
+        forward_booking_service(request_user=request.user, **serializer.validated_data)
         return JsonResponse({'success': 'Booking successfully forwarded'})
     except BookingDetail.DoesNotExist:
         return JsonResponse({'error': 'Booking not found'}, status=404)
     except RoomDetail.DoesNotExist:
         return JsonResponse({'error': 'One or more rooms not found'}, status=404)
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=400)
+    except Exception as exc:
+        return JsonResponse({'error': str(exc)}, status=400)
     
 @csrf_exempt
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication])
 def update_booking_new(request):
+    serializer = BookingUpdateSerializer(data=request.data)
+    if not serializer.is_valid():
+        return JsonResponse({'error': serializer.errors}, status=400)
     try:
-        # Log the incoming data
-        logger.info(f"Request data: {request.data}")
-
-        booking_id = request.data.get('booking_id')
-        modified_category = request.data.get('modified_category')
-        rooms = request.data.get('rooms', [])
-        remarks = request.data.get('remarks')
-        visitor_organization = request.data.get('visitorOrganization')
-        visitor_phone = request.data.get('visitorPhone')
-        visitor_email = request.data.get('visitorEmail')
-        visitor_name = request.data.get('visitorName')
-        visitor_address = request.data.get('visitorAddress')
-        bill_to_be_settled_by = request.data.get('billToBeSettledBy')
-        purpose = request.data.get('purpose')
-        number_of_rooms = request.data.get('numberOfRooms')  # New field
-        person_count = request.data.get('personCount')  # New field
-
-        # Validate required fields
-        if not booking_id or not modified_category or not visitor_organization:
-            return JsonResponse({'error': 'Missing required fields'}, status=400)
-
-        logger.info(f"Received rooms: {rooms}")
-
-        booking = BookingDetail.objects.select_related('intender', 'caretaker').get(id=booking_id)
-        # booking.status = "Forward"
-        booking.modified_visitor_category = modified_category
-        booking.remark = remarks
-        booking.bill_to_be_settled_by = bill_to_be_settled_by
-        booking.purpose = purpose
-        booking.number_of_rooms = number_of_rooms
-        booking.person_count = person_count  
-
-        # Update visitor details
-        for visitor in booking.visitor.all():
-            visitor.visitor_organization = visitor_organization
-            visitor.visitor_phone = visitor_phone
-            visitor.visitor_email = visitor_email
-            visitor.visitor_name = visitor_name
-            visitor.visitor_address = visitor_address
-            visitor.save()
-
-        # Clear existing rooms and add new rooms
-        booking.rooms.clear()
-        for room in rooms:
-            try:
-                room_object = RoomDetail.objects.get(room_number=room)
-                booking.rooms.add(room_object)
-            except RoomDetail.DoesNotExist:
-                logger.error(f"Room {room} does not exist")
-                return JsonResponse({'error': f'Room {room} not found'}, status=404)
-
-        booking.number_of_rooms_alloted = len(rooms)
-        booking.save()
-
-        # Notify the VhIncharge about the forwarded booking
-        incharge_designations = HoldsDesignation.objects.select_related(
-            'user', 'working', 'designation').filter(designation__name="VhIncharge")
-
-        if not incharge_designations.exists():
-            return JsonResponse({'error': 'VhIncharge not found'}, status=404)
-
-        incharge_name = incharge_designations.first()
-        visitors_hostel_notif(request.user, incharge_name.user, 'booking_forwarded')
-
+        update_booking_details(serializer.validated_data['booking_id'], serializer.validated_data, request.user)
         return JsonResponse({'success': 'Booking successfully forwarded'})
     except BookingDetail.DoesNotExist:
         return JsonResponse({'error': 'Booking not found'}, status=404)
     except RoomDetail.DoesNotExist:
         return JsonResponse({'error': 'One or more rooms not found'}, status=404)
-    except Exception as e:
-        logger.error(f"Error: {str(e)}")
-        return JsonResponse({'error': str(e)}, status=400)
+    except Exception as exc:
+        logger.error(f"Error: {str(exc)}")
+        return JsonResponse({'error': str(exc)}, status=400)
 
 
 
@@ -1849,7 +1099,7 @@ def update_booking_new(request):
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication])
 def get_inventory_items(request):
-    inventories = Inventory.objects.all()
+    inventories = get_inventory_queryset()
     serializer = InventorySerializer(inventories, many=True)
     return Response(serializer.data)
 
@@ -1859,7 +1109,7 @@ def get_inventory_items(request):
 @authentication_classes([TokenAuthentication])
 def get_inventory_item(request, pk):
     try:
-        inventory = Inventory.objects.get(id=pk)
+        inventory = get_inventory_item_selector(pk)
         serializer = InventorySerializer(inventory)
         return Response(serializer.data)
     except Inventory.DoesNotExist:
@@ -1870,7 +1120,7 @@ def get_inventory_item(request, pk):
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication])
 def get_inventory_bills(request):
-    bills = InventoryBill.objects.all()
+    bills = get_inventory_bills_queryset()
     serializer = InventoryBillSerializer(bills, many=True)
     return Response(serializer.data)
 
@@ -1880,7 +1130,7 @@ def get_inventory_bills(request):
 @authentication_classes([TokenAuthentication])
 def get_inventory_bill(request, pk):
     try:
-        bill = InventoryBill.objects.get(id=pk)
+        bill = get_inventory_bill_selector(pk)
         serializer = InventoryBillSerializer(bill)
         return Response(serializer.data)
     except InventoryBill.DoesNotExist:
@@ -1890,181 +1140,41 @@ def get_inventory_bill(request, pk):
 #income
 # account statements
 
-from rest_framework.decorators import api_view, permission_classes, authentication_classes
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.authentication import TokenAuthentication
-from .models import BookingDetail
-from .serializers import BookingDetailSerializer
-
-from datetime import date
-
-from datetime import date
-from django.db.models import Q
-
 # Fetch all booking details
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication])
 def get_all_bills(request):
-    bookings = BookingDetail.objects.filter(Q(status="Confirmed") | Q(status="Active"))
-    response_data = []
-    print("BOOKING DATA >>>> ", bookings)
-
-    for booking in bookings:
-        # Calculate the number of days of stay
-        num_days = (booking.booking_to - booking.booking_from).days + 1
-
-        # Determine the per-day cost based on the visitor category
-        visitor_costs = {'A': 0, 'B': 500, 'C': 800, 'D': 1400}
-        per_day_cost = visitor_costs.get(booking.visitor_category, 900)
-        room_bill = num_days * per_day_cost
-
-        # Use a transaction to ensure atomicity of bill creation
-        with transaction.atomic():
-            # Check if booking already has an associated bill
-            if hasattr(booking, 'bill') and booking.bill:
-                bill = booking.bill
-                total_bill = bill.meal_bill + room_bill
-                bill_id = bill.id
-                bill_date = bill.bill_date
-            else:
-                # Create a new bill if it doesn't exist
-                bill = Bill.objects.create(
-                    booking=booking,
-                    meal_bill=0.0,  # Assuming initial meal bill is 0
-                    room_bill=room_bill,
-                    payment_status=False,
-                    bill_date=booking.booking_to,  # Set bill_date to the checkout date
-                    caretaker=booking.caretaker  # Ensure caretaker is set
-                )
-                # Refresh booking instance to ensure it's linked to the new bill
-                booking.refresh_from_db()
-                total_bill = bill.room_bill
-                bill_id = bill.id
-                bill_date = bill.bill_date
-
-        # Append the booking's billing information to the response list
-        response_data.append({
-            'intender_name': booking.intender.username,  # Assuming `username` for the intender's name
-            'booking_from': booking.booking_from,
-            'booking_to': booking.booking_to,
-            'total_bill': total_bill,
-            'bill_id': bill_id,
-            'bill_date': bill_date,
-        })
-
-    return Response(response_data)
-
-from django.http import JsonResponse
-from rest_framework.response import Response
-from django.db import transaction
+    bookings = BookingDetail.objects.select_related('intender', 'caretaker').filter(Q(status="Confirmed") | Q(status="Active"))
+    return Response([build_booking_bill_response(booking) for booking in bookings])
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication])
 def get_bills_id(request, pk):
     try:
-        booking = BookingDetail.objects.get(id=pk, status="Confirmed")
-        
-        # Calculate the number of days of stay
-        num_days = (booking.booking_to - booking.booking_from).days + 1
-
-        # Determine the per-day cost based on the visitor category
-        visitor_costs = {'A': 0, 'B': 500, 'C': 800, 'D': 1400}
-        per_day_cost = visitor_costs.get(booking.visitor_category, 900)
-        room_bill = num_days * per_day_cost
-
-        # Use a transaction to ensure bill creation is committed immediately
-        with transaction.atomic():
-            # Check if booking already has a bill
-            if hasattr(booking, 'bill') and booking.bill:
-                bill = booking.bill
-                total_bill = bill.meal_bill + room_bill
-                bill_id = bill.id
-                bill_date = bill.bill_date
-            else:
-                # Create and link a new bill if it doesn't exist
-                bill = Bill.objects.create(
-                    booking=booking,
-                    meal_bill=0,   # Assuming meal bill starts at 0
-                    room_bill=room_bill,
-                    payment_status=False,
-                    bill_date=booking.booking_to  # Checkout date as bill_date
-                )
-                # Refresh the booking to link the new bill
-                booking.refresh_from_db()  
-                total_bill = bill.room_bill
-                bill_id = bill.id
-                bill_date = bill.bill_date
-
-        # Prepare response data with all necessary billing details
-        response_data = {
-            'intender_name': booking.intender.username,  # Assuming `username` for intender's name
-            'booking_from': booking.booking_from,
-            'booking_to': booking.booking_to,
-            'total_bill': total_bill,
-            'bill_id': bill_id,
-            'bill_date': bill_date,
-        }
-        return Response(response_data)
+        booking = BookingDetail.objects.select_related('intender', 'caretaker').get(id=pk, status="Confirmed")
+        return Response(build_booking_bill_response(booking))
 
     except BookingDetail.DoesNotExist:
         return Response({"error": "Booking detail not found"}, status=404)
 
     
-from django.utils import timezone
-
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication])
 def completed_bookings(request):
-    # Check the user's designation
-    vhcaretaker = request.user.holds_designations.filter(
-        designation__name='VhCaretaker').exists()
-    vhincharge = request.user.holds_designations.filter(
-        designation__name='VhIncharge').exists()
-
-    # Determine the user's designation
-    user_designation = "Intender"
-    if vhincharge:
-        user_designation = "VhIncharge"
-    elif vhcaretaker:
-        user_designation = "VhCaretaker"
-
-    if request.method == 'GET':
-        current_date = timezone.now().date()
-
-        # Fetch completed bookings based on the user's designation
-        if user_designation in ["VhIncharge", "VhCaretaker"]:
-            # For VhIncharge or VhCaretaker, fetch all completed bookings with booking_to date older than the current date
-            all_bookings = BookingDetail.objects.select_related('intender').filter(
-                Q(status='Confirmed') | Q(status='Complete'),
-                # booking_to__lt=current_date
-            )
-        else:
-            # For Intenders, fetch only their completed bookings with booking_to date older than the current date
-            all_bookings = BookingDetail.objects.select_related('intender').filter(
-                Q(status='Confirmed') | Q(status='Complete'),
-                intender=request.user,
-                # booking_to__lt=current_date
-            )
-
-        # Serialize the queryset to a list of dictionaries with required fields
-        bookings_list = [
-            {
-                'intender': booking.intender.first_name,
-                'bookingDate': booking.booking_date.isoformat() if booking.booking_date else None,
-                'checkIn': booking.check_in.isoformat() if booking.check_in else None,
-                'checkInTime': booking.check_in_time if booking.check_in_time else None,
-                'checkOutTime': booking.check_out_time if booking.check_out_time else None,
-                'checkOut': booking.check_out.isoformat() if booking.check_out else None,
-                'category': booking.visitor_category,
-                'modifiedVisitorCategory': booking.modified_visitor_category,
-            }
-            for booking in all_bookings
-        ]
-
-        return JsonResponse({'completed_bookings': bookings_list})
-    else:
-        return JsonResponse({'error': 'Invalid request method'}, status=400)
+    bookings_list = [
+        {
+            'intender': booking.intender.first_name,
+            'bookingDate': booking.booking_date.isoformat() if booking.booking_date else None,
+            'checkIn': booking.check_in.isoformat() if booking.check_in else None,
+            'checkInTime': booking.check_in_time if booking.check_in_time else None,
+            'checkOutTime': booking.check_out_time if booking.check_out_time else None,
+            'checkOut': booking.check_out.isoformat() if booking.check_out else None,
+            'category': booking.visitor_category,
+            'modifiedVisitorCategory': booking.modified_visitor_category,
+        }
+        for booking in get_api_completed_bookings_queryset(request.user)
+    ]
+    return JsonResponse({'completed_bookings': bookings_list})

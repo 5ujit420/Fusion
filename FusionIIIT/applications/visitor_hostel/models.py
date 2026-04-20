@@ -4,50 +4,58 @@ from django.utils import timezone
 
 from applications.globals.models import ExtraInfo
 
-VISITOR_CATEGORY = (
-    ('A', 'A'),
-    ('B', 'B'),
-    ('C', 'C'),
-    ('D', 'D'),
-    )
+class VisitorCategory(models.TextChoices):
+    A = "A", "A"
+    B = "B", "B"
+    C = "C", "C"
+    D = "D", "D"
 
-ROOM_TYPE = (
-    ('SingleBed', 'SingleBed'),
-    ('DoubleBed', 'DoubleBed'),
-    ('VIP', 'VIP')
-    )
 
-ROOM_FLOOR = (
-    ('GroundFloor', 'GroundFloor'),
-    ('FirstFloor', 'FirstFloor'),
-    ('SecondFloor', 'SecondFloor'),
-    ('ThirdFloor', 'ThirdFloor'),
-    )
+class RoomType(models.TextChoices):
+    SINGLE_BED = "SingleBed", "SingleBed"
+    DOUBLE_BED = "DoubleBed", "DoubleBed"
+    VIP = "VIP", "VIP"
 
-ROOM_STATUS = (
-    ('Booked', 'Booked'),
-    ('CheckedIn', 'CheckedIn'),
-    ('Available', 'Available'),
-    ('UnderMaintenance', 'UnderMaintenance'),
-    )
 
-BOOKING_STATUS = (
-    ("Confirmed" , 'Confirmed'),
-    ("Pending" , 'Pending'),
-    ("Rejected" , 'Rejected'),
-    ("Canceled" , 'Canceled'),
-    ("CancelRequested" , 'CancelRequested'),
-    ("CheckedIn" , 'CheckedIn'),
-    ("Complete", 'Complete'),
-    ("Forward", 'Forward')
-    )
+class RoomFloor(models.TextChoices):
+    GROUND_FLOOR = "GroundFloor", "GroundFloor"
+    FIRST_FLOOR = "FirstFloor", "FirstFloor"
+    SECOND_FLOOR = "SecondFloor", "SecondFloor"
+    THIRD_FLOOR = "ThirdFloor", "ThirdFloor"
 
-BILL_TO_BE_SETTLED_BY = (
-    ("Intender", "Intender"),
-    ("Visitor", "Visitor"),
-    ("ProjectNo", "ProjectNo"),
-    ("Institute", "Institute")
-    )
+
+class RoomStatus(models.TextChoices):
+    BOOKED = "Booked", "Booked"
+    CHECKED_IN = "CheckedIn", "CheckedIn"
+    AVAILABLE = "Available", "Available"
+    UNDER_MAINTENANCE = "UnderMaintenance", "UnderMaintenance"
+
+
+class BookingStatus(models.TextChoices):
+    CONFIRMED = "Confirmed", "Confirmed"
+    PENDING = "Pending", "Pending"
+    REJECTED = "Rejected", "Rejected"
+    CANCELED = "Canceled", "Canceled"
+    CANCEL_REQUESTED = "CancelRequested", "CancelRequested"
+    CHECKED_IN = "CheckedIn", "CheckedIn"
+    COMPLETE = "Complete", "Complete"
+    FORWARD = "Forward", "Forward"
+    EXPIRED = "Expired", "Expired"
+
+
+class BillSettledBy(models.TextChoices):
+    INTENDER = "Intender", "Intender"
+    VISITOR = "Visitor", "Visitor"
+    PROJECT_NO = "ProjectNo", "ProjectNo"
+    INSTITUTE = "Institute", "Institute"
+
+
+VISITOR_CATEGORY = VisitorCategory.choices
+ROOM_TYPE = RoomType.choices
+ROOM_FLOOR = RoomFloor.choices
+ROOM_STATUS = RoomStatus.choices
+BOOKING_STATUS = BookingStatus.choices
+BILL_TO_BE_SETTLED_BY = BillSettledBy.choices
 
 
 class VisitorDetail(models.Model):
@@ -67,7 +75,7 @@ class RoomDetail(models.Model):
     room_number  = models.CharField(max_length=4, unique=True)
     room_type = models.CharField(max_length=12, choices=ROOM_TYPE)
     room_floor = models.CharField(max_length=12, choices=ROOM_FLOOR)
-    room_status  = models.CharField(max_length=20, choices=ROOM_STATUS, default='Available')
+    room_status  = models.CharField(max_length=20, choices=ROOM_STATUS, default=RoomStatus.AVAILABLE)
 
     def __str__(self):
         return '{} - {}'.format(self.id, self.room_number , self.room_type, self.room_status, self.room_floor)
@@ -76,8 +84,8 @@ class RoomDetail(models.Model):
 class BookingDetail(models.Model):
     intender = models.ForeignKey(User, related_name='intender', on_delete=models.CASCADE)
     caretaker = models.ForeignKey(User, related_name='caretaker', default=1, on_delete=models.CASCADE)
-    visitor_category = models.CharField(max_length=1, choices=VISITOR_CATEGORY, default='C')
-    modified_visitor_category = models.CharField(max_length=1, choices=VISITOR_CATEGORY, default='C')
+    visitor_category = models.CharField(max_length=1, choices=VISITOR_CATEGORY, default=VisitorCategory.C)
+    modified_visitor_category = models.CharField(max_length=1, choices=VISITOR_CATEGORY, default=VisitorCategory.C)
     person_count = models.IntegerField(default=1)
     purpose = models.TextField(default="Hi!")
     booking_from = models.DateField()
@@ -90,7 +98,7 @@ class BookingDetail(models.Model):
     check_out = models.DateField(null=True, blank=True)
     check_in_time = models.TimeField(null=True, blank=True)
     check_out_time = models.TimeField(null=True, blank=True)
-    status = models.CharField(max_length=15, choices=BOOKING_STATUS ,default ="Pending")
+    status = models.CharField(max_length=15, choices=BOOKING_STATUS ,default=BookingStatus.PENDING)
     remark = models.CharField(max_length=40, blank=True, null=True)
     visitor = models.ManyToManyField(VisitorDetail)
     image = models.FileField(null=True, blank=True, upload_to='VhImage/')
@@ -98,7 +106,7 @@ class BookingDetail(models.Model):
     number_of_rooms =  models.IntegerField(default=1,null=True,blank=True)
     number_of_rooms_alloted =  models.IntegerField(default=1,null=True,blank=True)
     booking_date = models.DateField(auto_now_add=False, auto_now=False, default=timezone.now)
-    bill_to_be_settled_by = models.CharField(max_length=15, choices=BILL_TO_BE_SETTLED_BY ,default ="Intender")
+    bill_to_be_settled_by = models.CharField(max_length=15, choices=BILL_TO_BE_SETTLED_BY ,default=BillSettledBy.INTENDER)
 
     def __str__(self):
         return '%s ----> %s - %s id is %s and category is %s' % (self.id, self.visitor, self.status, self.id, self.visitor_category)
