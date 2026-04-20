@@ -88,9 +88,9 @@ class UserComplaintView(APIView):
         """
         Returns the list of complaints made by the user.
         """
-        a = request.user
-        y = ExtraInfo.objects.select_related("user", "department").filter(user=a).first()
-        complaints = StudentComplain.objects.filter(complainer=y).order_by("-id")
+        user_info = ExtraInfo.objects.select_related("user", "department").filter(user=request.user).first()
+        from .selectors import get_student_complaints
+        complaints = get_student_complaints(user_info)
         serializer = StudentComplainSerializer(complaints, many=True)
         return Response(serializer.data)
 
@@ -104,62 +104,14 @@ class UserComplaintView(APIView):
         data["complainer"] = y.id
         data["status"] = 0
         comp_type = data.get("complaint_type", "")
-        # Finish time is according to complaint type
-        complaint_finish = datetime.now() + timedelta(days=2)
-        if comp_type == "Electricity":
-            complaint_finish = datetime.now() + timedelta(days=2)
-        elif comp_type == "Carpenter":
-            complaint_finish = datetime.now() + timedelta(days=2)
-        elif comp_type == "Plumber":
-            complaint_finish = datetime.now() + timedelta(days=2)
-        elif comp_type == "Garbage":
-            complaint_finish = datetime.now() + timedelta(days=1)
-        elif comp_type == "Dustbin":
-            complaint_finish = datetime.now() + timedelta(days=1)
-        elif comp_type == "Internet":
-            complaint_finish = datetime.now() + timedelta(days=4)
-        elif comp_type == "Other":
-            complaint_finish = datetime.now() + timedelta(days=3)
-        data["complaint_finish"] = complaint_finish.date()
+        
+        from .services import ComplaintService
+        data["complaint_finish"] = ComplaintService.get_finish_time(comp_type)
 
         serializer = StudentComplainSerializer(data=data)
         if serializer.is_valid():
             complaint = serializer.save()
-
-            location = data.get("location", "")
-            if location == "hall-1":
-                dsgn = "hall1caretaker"
-            elif location == "hall-3":
-                dsgn = "hall3caretaker"
-            elif location == "hall-4":
-                dsgn = "hall4caretaker"
-            elif location == "CC1":
-                dsgn = "cc1convener"
-            elif location == "CC2":
-                dsgn = "CC2 convener"
-            elif location == "core_lab":
-                dsgn = "corelabcaretaker"
-            elif location == "LHTC":
-                dsgn = "lhtccaretaker"
-            elif location == "NR2":
-                dsgn = "nr2caretaker"
-            elif location == "Maa Saraswati Hostel":
-                dsgn = "mshcaretaker"
-            elif location == "Nagarjun Hostel":
-                dsgn = "nhcaretaker"
-            elif location == "Panini Hostel":
-                dsgn = "phcaretaker"
-            else:
-                dsgn = "rewacaretaker"
-            
-            caretakers = HoldsDesignation.objects.select_related('user', 'working', 'designation').filter(designation__name=dsgn).distinct('user')
-            
-            # Send notification to all relevant caretakers
-            student = 1
-            message = "A New Complaint has been lodged"
-            for caretaker in caretakers:
-                complaint_system_notif(request.user, caretaker.user, 'lodge_comp_alert', complaint.id, student, message)
-            
+            ComplaintService.lodge_complaint(request.user, complaint)
             return Response(serializer.data, status=201)
         else:
             return Response(serializer.errors, status=400)
@@ -175,10 +127,7 @@ class CaretakerFeedbackView(APIView):
         feedback = request.data.get("feedback", "")
         rating = request.data.get("rating", "")
         caretaker_type = request.data.get("caretakertype", "")
-        try:
-            rating = int(rating)
-        except ValueError:
-            return Response({"error": "Invalid rating"}, status=400)
+        
         all_caretaker = Caretaker.objects.filter(area=caretaker_type).order_by("-id")
         for x in all_caretaker:
             rate = x.rating
@@ -202,22 +151,14 @@ class SubmitFeedbackView(APIView):
         feedback = request.data.get("feedback", "")
         rating = request.data.get("rating", "")
 
-        try:
-            rating = int(rating)
-        except ValueError:
-            return Response({"error": "Invalid rating"}, status=400)
+        
         
         try:
             StudentComplain.objects.filter(id=complaint_id).update(feedback=feedback, flag=rating)
             a = StudentComplain.objects.filter(id=complaint_id).first()
-            care = Caretaker.objects.filter(area=a.location).first()
-            rate = care.rating
-            if rate == 0:
-                newrate = rating
-            else:
-                newrate = int((rating + rate) / 2)
-            care.rating = newrate
-            care.save()
+            if a:
+                from .services import RatingService
+                RatingService.update_caregiver_rating(a.location, rating)
             return Response({"success": "Feedback submitted"})
         except:
             return Response({"error": "Internal server errror"}, status=500)

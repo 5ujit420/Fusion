@@ -7,38 +7,35 @@ from applications.globals.models import ExtraInfo
 # Class definations:
 
 
-class Constants:
-    AREA = (
-        ('hall-1', 'hall-1'),
-        ('hall-3', 'hall-3'),
-        ('hall-4', 'hall-4'),
-        ('library', 'CC1'),
-        ('computer center', 'CC2'),
-        ('core_lab', 'core_lab'),
-        ('LHTC', 'LHTC'),
-        ('NR2', 'NR2'),
-        ('NR3', 'NR3'),
-        ('Admin building', 'Admin building'),
-        ('Rewa_Residency', 'Rewa_Residency'),
-        ('Maa Saraswati Hostel', 'Maa Saraswati Hostel'),
-        ('Nagarjun Hostel', 'Nagarjun Hostel'),
-        ('Panini Hostel', 'Panini Hostel'),
+class AreaChoices(models.TextChoices):
+    HALL_1 = "hall-1", "hall-1"
+    HALL_3 = "hall-3", "hall-3"
+    HALL_4 = "hall-4", "hall-4"
+    LIBRARY = "library", "CC1"
+    COMPUTER_CENTER = "computer center", "CC2"
+    CORE_LAB = "core_lab", "core_lab"
+    LHTC = "LHTC", "LHTC"
+    NR2 = "NR2", "NR2"
+    NR3 = "NR3", "NR3"
+    ADMIN_BUILDING = "Admin building", "Admin building"
+    REWA_RESIDENCY = "Rewa_Residency", "Rewa_Residency"
+    MAA_SARASWATI_HOSTEL = "Maa Saraswati Hostel", "Maa Saraswati Hostel"
+    NAGARJUN_HOSTEL = "Nagarjun Hostel", "Nagarjun Hostel"
+    PANINI_HOSTEL = "Panini Hostel", "Panini Hostel"
 
-    )
-    COMPLAINT_TYPE = (
-        ('Electricity', 'Electricity'),
-        ('carpenter', 'carpenter'),
-        ('plumber', 'plumber'),
-        ('garbage', 'garbage'),
-        ('dustbin', 'dustbin'),
-        ('internet', 'internet'),
-        ('other', 'other'),
-    )
+class ComplaintTypeChoices(models.TextChoices):
+    ELECTRICITY = "Electricity", "Electricity"
+    CARPENTER = "carpenter", "carpenter"
+    PLUMBER = "plumber", "plumber"
+    GARBAGE = "garbage", "garbage"
+    DUSTBIN = "dustbin", "dustbin"
+    INTERNET = "internet", "internet"
+    OTHER = "other", "other"
 
 
 class Caretaker(models.Model):
     staff_id = models.ForeignKey(ExtraInfo, on_delete=models.CASCADE)
-    area = models.CharField(choices=Constants.AREA, max_length=20, default='hall-3')
+    area = models.CharField(choices=AreaChoices.choices, max_length=20, default='hall-3')
     rating = models.IntegerField(default=0)
     myfeedback = models.CharField(max_length=400, default='this is my feedback')
     # no_of_comps = models.CharField(max_length=1000)
@@ -48,7 +45,7 @@ class Caretaker(models.Model):
     
 class Warden(models.Model):
     staff_id = models.ForeignKey(ExtraInfo, on_delete=models.CASCADE)
-    area = models.CharField(choices=Constants.AREA, max_length=20, default='hall-1')
+    area = models.CharField(choices=AreaChoices.choices, max_length=20, default='hall-1')
     rating = models.IntegerField(default=0)
     myfeedback = models.CharField(max_length=400, default="No feedback yet")
 
@@ -57,7 +54,7 @@ class Warden(models.Model):
 
 class SectionIncharge(models.Model):
     staff_id = models.ForeignKey(ExtraInfo, on_delete=models.CASCADE)
-    work_type = models.CharField(choices=Constants.COMPLAINT_TYPE,
+    work_type = models.CharField(choices=ComplaintTypeChoices.choices,
                                    max_length=20, default='Electricity')
 
     def __str__(self):
@@ -68,7 +65,7 @@ class Workers(models.Model):
     name = models.CharField(max_length=50)
     age = models.CharField(max_length=10)
     phone = models.BigIntegerField(blank=True)
-    worker_type = models.CharField(choices=Constants.COMPLAINT_TYPE,
+    worker_type = models.CharField(choices=ComplaintTypeChoices.choices,
                                    max_length=20, default='internet')
 
     def __str__(self):
@@ -79,9 +76,9 @@ class StudentComplain(models.Model):
     complainer = models.ForeignKey(ExtraInfo, on_delete=models.CASCADE)
     complaint_date = models.DateTimeField(default=timezone.now)
     complaint_finish = models.DateField(blank=True, null=True)
-    complaint_type = models.CharField(choices=Constants.COMPLAINT_TYPE,
+    complaint_type = models.CharField(choices=ComplaintTypeChoices.choices,
                                       max_length=20, default='internet')
-    location = models.CharField(max_length=20, choices=Constants.AREA)
+    location = models.CharField(max_length=20, choices=AreaChoices.choices)
     specific_location = models.CharField(max_length=50, blank=True)
     details = models.CharField(max_length=100)
     status = models.IntegerField(default='0')
@@ -108,7 +105,7 @@ class ServiceProvider(models.Model):
         on_delete=models.CASCADE,
         db_column="ser_pro_id_id"  # Map to the existing column
     )
-    type = models.CharField(choices=Constants.COMPLAINT_TYPE, max_length=30,default='Electricity')
+    type = models.CharField(choices=ComplaintTypeChoices.choices, max_length=30,default='Electricity')
 
     class Meta:
         db_table = "complaint_system_service_provider"
@@ -129,7 +126,7 @@ class ServiceAuthority(models.Model):
         on_delete=models.CASCADE,
         db_column="ser_auth_id_id"  # Map to the existing column
     )
-    type = models.CharField(choices=Constants.COMPLAINT_TYPE, max_length=30,default='Electricity')
+    type = models.CharField(choices=ComplaintTypeChoices.choices, max_length=30,default='Electricity')
 
     class Meta:
         db_table = "complaint_system_service_authority"

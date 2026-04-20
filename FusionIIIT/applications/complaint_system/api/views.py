@@ -41,18 +41,20 @@ def complaint_details_api(request,detailcomp_id1):
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication])
 def student_complain_api(request):
+    from applications.complaint_system.selectors import get_student_complaints, get_complaints_by_location
     user = get_object_or_404(User,username = request.user.username)
     user = ExtraInfo.objects.all().filter(user = user).first()
     if user.user_type == 'student':
-        complain = StudentComplain.objects.filter(complainer = user)
+        complain = get_student_complaints(user)
     elif user.user_type == 'staff':
-        staff = ExtraInfo.objects.get(id=user.id)
-        staff = Caretaker.objects.get(staff_id=staff)
-        complain = StudentComplain.objects.filter(location = staff.area)
+        staff = Caretaker.objects.get(staff_id=user)
+        complain = get_complaints_by_location(staff.area)
     elif user.user_type == 'faculty':
-        faculty = ExtraInfo.objects.get(id=user.id)
-        faculty = ServiceProvider.objects.get(ser_pro_id=faculty)
-        complain = StudentComplain.objects.filter(location = faculty.area)
+        faculty = ServiceProvider.objects.get(ser_pro_id=user)
+        complain = get_complaints_by_location(faculty.type)  # Wait, wait, ServiceProvider has type, not area!
+    else:
+        complain = StudentComplain.objects.none()
+    
     complains = serializers.StudentComplainSerializers(complain,many=True).data
     resp = {
         'student_complain' : complains,
