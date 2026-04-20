@@ -1,37 +1,44 @@
-from django.contrib.auth import get_user_model
-from rest_framework.authtoken.models import Token
+# api/serializers.py
+# T-12 / T-18 / CS-31: Renamed all *Serializers → *Serializer (singular, consistent).
+# T-18: Canonical serializers now live in root serializers.py; this file provides
+#        api-layer-specific classes that re-export or add api/views.py-specific shapes.
+
 from rest_framework import serializers
-from notifications.models import Notification
 from applications.complaint_system.models import Caretaker, StudentComplain, ServiceProvider, Workers
-from applications.globals.models import ExtraInfo,User
+from applications.globals.models import ExtraInfo, User
 
-class StudentComplainSerializers(serializers.ModelSerializer):
 
+class StudentComplainSerializer(serializers.ModelSerializer):
     class Meta:
-        model=StudentComplain
-        fields=('__all__')
+        model = StudentComplain
+        fields = '__all__'
 
-class WorkersSerializers(serializers.ModelSerializer):
+
+class WorkersSerializer(serializers.ModelSerializer):
     class Meta:
         model = Workers
-        fields=('__all__')
+        fields = '__all__'
 
-class CaretakerSerializers(serializers.ModelSerializer):
+
+class CaretakerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Caretaker
-        fields=('__all__')
+        fields = '__all__'
 
-class ServiceProviderSerializers(serializers.ModelSerializer):
-    class Meta:
-        model=ServiceProvider
-        fields=('__all__')
 
-class ExtraInfoSerializers(serializers.ModelSerializer):
+class ServiceProviderSerializer(serializers.ModelSerializer):
     class Meta:
-        model=ExtraInfo
-        fields=('__all__')
+        model = ServiceProvider
+        fields = '__all__'
 
-class UserSerializers(serializers.ModelSerializer):
+
+class ExtraInfoSerializer(serializers.ModelSerializer):
     class Meta:
-        model=User
-        fields=('__all__')
+        model = ExtraInfo
+        fields = '__all__'
+
+
+class UserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = '__all__'
