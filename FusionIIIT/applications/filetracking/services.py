@@ -284,6 +284,46 @@ def view_outbox(username, designation, src_module):
     return sent_files_serialized.data
 
 
+def enrich_outbox_files_for_view(outward_files, username, designation_obj):
+    """Enrich serialized files with models to avoid N+1 query in views."""
+    from django.utils.dateparse import parse_datetime
+    
+    sender_extrainfo = selectors.get_extrainfo_by_username(username)
+    for f in outward_files:
+        last_forw = selectors.get_last_forw_tracking(
+            file_id=f['id'],
+            sender_extrainfo=sender_extrainfo,
+            sender_holds_designation=designation_obj,
+        )
+        f['sent_to_user'] = last_forw.receiver_id if last_forw else None
+        f['sent_to_design'] = last_forw.receive_design if last_forw else None
+        f['last_sent_date'] = last_forw.forward_date if last_forw else None
+        f['upload_date'] = parse_datetime(f['upload_date'])
+        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
+    return outward_files
+
+
+def enrich_inbox_files_for_view(inward_files, username, designation_name):
+    """Enrich serialized files with models to avoid N+1 query in views."""
+    from django.utils.dateparse import parse_datetime
+    user_designation = selectors.get_designation_by_name(designation_name)
+    user_object = selectors.get_user_by_username(username)
+    
+    for f in inward_files:
+        f['upload_date'] = parse_datetime(f['upload_date'])
+        last_recv = selectors.get_last_recv_tracking(
+            file_id=f['id'],
+            receiver_user=user_object,
+            receive_design=user_designation,
+        )
+        f['receive_date'] = last_recv.receive_date if last_recv else None
+        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
+        current_owner = selectors.get_current_file_owner(f['id'])
+        f['is_forwarded'] = (str(current_owner.username) != str(username)) if current_owner else True
+
+    return add_uploader_department_to_files_list(inward_files)
+
+
 # ---------------------------------------------------------------------------
 # Archive  (V-10, V-20, R-08)
 # ---------------------------------------------------------------------------
@@ -310,6 +350,22 @@ def view_archived(username, designation, src_module):
     archived_files_unique = unique_list(archived_files)
     archived_files_serialized = FileHeaderSerializer(archived_files_unique, many=True)
     return archived_files_serialized.data
+
+
+def enrich_archived_files_for_view(archive_files):
+    """Enrich serialized files with models to avoid N+1 query in views."""
+    from applications.globals.models import Designation
+    from django.utils.dateparse import parse_datetime
+    
+    designation_ids = unique_list([f['designation'] for f in archive_files])
+    designations_map = {d.id: d for d in Designation.objects.filter(id__in=designation_ids)}
+    
+    for f in archive_files:
+        f['upload_date'] = parse_datetime(f['upload_date'])
+        f['designation'] = designations_map.get(f['designation'])
+        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
+    
+    return add_uploader_department_to_files_list(archive_files)
 
 
 def archive_file_sdk(file_id):
@@ -339,6 +395,16 @@ def archive_file_with_auth(file_id, requesting_user):
         file_obj.save()
         return True, 'File Archived'
     return False, 'Unauthorized access'
+
+
+def finish_file(file_id):
+    """
+    Mark a file and its tracking entries as finished (read).
+    Preserves logic from views.py finish().
+    """
+    File.objects.filter(id=file_id).update(is_read=True)
+    Tracking.objects.filter(file_id=file_id).update(is_read=True)
+    return True
 
 
 # ---------------------------------------------------------------------------

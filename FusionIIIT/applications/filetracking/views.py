@@ -57,11 +57,8 @@ def filetracking(request):
                         remarks=request.POST.get('remarks'),
                     )
                     messages.success(request, 'File sent successfully')
-                except User.DoesNotExist:  # V-30: specific exception
-                    messages.error(request, 'Enter a valid Username')
-                    return redirect('/filetracking/')
-                except Designation.DoesNotExist:  # V-30
-                    messages.error(request, 'Enter a valid Designation')
+                except (User.DoesNotExist, Designation.DoesNotExist):
+                    messages.error(request, 'Enter a valid Username and Designation')
                     return redirect('/filetracking/')
                 except ValidationError as e:
                     messages.error(request, str(e.message if hasattr(e, 'message') else e))
@@ -77,8 +74,7 @@ def filetracking(request):
     hd_obj = selectors.get_holds_designation_obj(request.user, designation_name)
 
     context = {
-        'file': File.objects.select_related(
-            'uploader__user', 'uploader__department', 'designation').all(),
+        'file': selectors.get_all_files_with_related(),
         'extrainfo': selectors.get_extrainfo_by_user(request.user),
         'holdsdesignations': selectors.get_user_designations(request.user),
         'designation_name': designation_name,
@@ -141,17 +137,7 @@ def outbox_view(request):
         src_module='filetracking',
     )
 
-    for f in outward_files:
-        last_forw = selectors.get_last_forw_tracking(
-            file_id=f['id'],
-            sender_extrainfo=selectors.get_extrainfo_by_username(user_hd.user),
-            sender_holds_designation=user_hd,
-        )
-        f['sent_to_user'] = last_forw.receiver_id if last_forw else None
-        f['sent_to_design'] = last_forw.receive_design if last_forw else None
-        f['last_sent_date'] = last_forw.forward_date if last_forw else None
-        f['upload_date'] = parse_datetime(f['upload_date'])
-        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
+    outward_files = services.enrich_outbox_files_for_view(outward_files, user_hd.user.username, user_hd)
 
     # Search filtering
     subject_query = request.GET.get('subject', '')
@@ -197,19 +183,7 @@ def inbox_view(request):
         src_module='filetracking',
     )
 
-    for f in inward_files:
-        f['upload_date'] = parse_datetime(f['upload_date'])
-        last_recv = selectors.get_last_recv_tracking(
-            file_id=f['id'],
-            receiver_user=user_hd.user,
-            receive_design=user_hd.designation,
-        )
-        f['receive_date'] = last_recv.receive_date if last_recv else None
-        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
-        current_owner = selectors.get_current_file_owner(f['id'])
-        f['is_forwarded'] = (str(current_owner.username) != str(user_hd.user)) if current_owner else True
-
-    inward_files = services.add_uploader_department_to_files_list(inward_files)
+    inward_files = services.enrich_inbox_files_for_view(inward_files, user_hd.user.username, user_hd.designation.name)
 
     subject_query = request.GET.get('subject', '')
     sent_to_query = request.GET.get('sent_to', '')
@@ -262,8 +236,7 @@ def inward(request):
 @dropdown_designation_valid
 def confirmdelete(request, id):
     """Confirm deletion page."""
-    file = File.objects.select_related(
-        'uploader__user', 'uploader__department', 'designation').get(pk=id)
+    file = selectors.get_file_by_id_with_related(id)
     context = {'j': file}
     return render(request, 'filetracking/confirmdelete.html', context)
 
@@ -337,16 +310,8 @@ def forward(request, id):
                 )
                 messages.success(request, 'File sent successfully')
                 return redirect(reverse('filetracking:filetracking'))
-            except User.DoesNotExist:  # V-30
-                messages.error(request, 'Enter a valid destination')
-                context = {
-                    'designations': designations, 'file': file, 'track': track,
-                    'designation_name': designation_name, 'designation_id': designation_id,
-                    'notifications': request.user.notifications.all(), 'path_parent': 'inbox',
-                }
-                return render(request, 'filetracking/forward.html', context)
-            except Designation.DoesNotExist:  # V-30
-                messages.error(request, 'Enter a valid Designation')
+            except (User.DoesNotExist, Designation.DoesNotExist):
+                messages.error(request, 'Enter a valid destination and Designation')
                 context = {
                     'designations': designations, 'file': file, 'track': track,
                     'designation_name': designation_name, 'designation_id': designation_id,
@@ -385,13 +350,7 @@ def archive_view(request, id):
         src_module='filetracking',
     )
 
-    from applications.globals.models import Designation
-    for f in archive_files:
-        f['upload_date'] = parse_datetime(f['upload_date'])
-        f['designation'] = Designation.objects.get(id=f['designation'])
-        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
-
-    archive_files = services.add_uploader_department_to_files_list(archive_files)
+    archive_files = services.enrich_archived_files_for_view(archive_files)
 
     context = {
         'archive_files': archive_files,
@@ -407,7 +366,7 @@ def archive_view(request, id):
 @dropdown_designation_valid
 def archive_finish(request, id):
     file1 = get_object_or_404(File, id=id)
-    track = Tracking.objects.filter(file_id=file1)
+    track = selectors.get_tracking_for_file_by_id(file1.id)
     return render(request, 'filetracking/archive_finish.html', {'file': file1, 'track': track})
 
 
@@ -441,11 +400,10 @@ def finish_fileview(request, id):
 @dropdown_designation_valid
 def finish(request, id):
     file1 = get_object_or_404(File, id=id)
-    track = Tracking.objects.filter(file_id=file1)
+    track = selectors.get_tracking_for_file_by_id(file1.id)
     if request.method == "POST":
         if 'Finished' in request.POST:
-            File.objects.filter(pk=id).update(is_read=True)
-            track.update(is_read=True)
+            services.finish_file(id)
             messages.success(request, 'File Archived')
     context = {
         'file': file1, 'track': track, 'fileid': id,
@@ -547,11 +505,8 @@ def edit_draft_view(request, id, *args, **kwargs):
                 )
                 messages.success(request, 'File sent successfully')
                 return render(request, 'filetracking/composefile.html')
-            except User.DoesNotExist:  # V-30
-                messages.error(request, 'Enter a valid destination')
-                return redirect(reverse('filetracking:filetracking'))
-            except Designation.DoesNotExist:  # V-30
-                messages.error(request, 'Enter a valid Designation')
+            except (User.DoesNotExist, Designation.DoesNotExist):
+                messages.error(request, 'Enter a valid destination and Designation')
                 return redirect(reverse('filetracking:filetracking'))
 
     designations = selectors.get_user_designations(request.user)

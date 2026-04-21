@@ -145,6 +145,13 @@ def get_draft_files(uploader_extrainfo, designation, src_module):
     )
 
 
+def get_all_files_with_related():
+    """Return all files with uploader and designation prefetched."""
+    return File.objects.select_related(
+        'uploader__user', 'uploader__department', 'designation'
+    ).all()
+
+
 # ---------------------------------------------------------------------------
 # User / ExtraInfo / Designation selectors  (R-07)
 # ---------------------------------------------------------------------------
