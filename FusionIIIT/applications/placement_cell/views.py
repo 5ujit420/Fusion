@@ -32,10 +32,12 @@ from applications.globals.models import (DepartmentInfo, ExtraInfo,
 from applications.academic_information.models import Student
 from .forms import (AddAchievement, AddChairmanVisit, AddCourse, AddEducation,
                     AddExperience, AddReference, AddPatent, AddProfile, AddProject,
-                    AddPublication, AddSchedule, AddSkill, ManageHigherRecord,
+                    AddPublication, AddSchedule, AddSkill, ChairmanVisitSaveForm,
+                    ManageHigherRecord,
                     ManagePbiRecord, ManagePlacementRecord, SearchHigherRecord,
-                    SearchPbiRecord, SearchPlacementRecord,
+                    PlacementRecordSaveForm, SearchPbiRecord, SearchPlacementRecord,
                     SearchStudentRecord, SendInvite)
+from . import selectors, services
 
 from .models import (Achievement, ChairmanVisit, Course, Education, Experience, Conference,
                      Has, NotifyStudent, Patent, PlacementRecord, Extracurricular, Reference,
@@ -165,60 +167,17 @@ def placement__Statistics(request):
     officer_statistics_past_higher_search = 0
 
     profile = get_object_or_404(ExtraInfo, Q(user=user))
-    studentrecord = StudentRecord.objects.select_related('unique_id','record_id').all()
-
-    years = PlacementRecord.objects.filter(~Q(placement_type="HIGHER STUDIES")).values('year').annotate(Count('year'))
-    records = PlacementRecord.objects.values('name', 'year', 'ctc', 'placement_type').annotate(Count('name'), Count('year'), Count('placement_type'), Count('ctc'))
-
-
-
-
-    #working here to fetch all placement record
-    all_records=PlacementRecord.objects.all()
-    print(all_records)
-
-
-
-
-
-
-    invitecheck=0
-    for r in records:
-        r['name__count'] = 0
-        r['year__count'] = 0
-        r['placement_type__count'] = 0
-    tcse = dict()
-    tece = dict()
-    tme = dict()
-    tadd = dict()
-    for y in years:
-        tcse[y['year']] = 0
-        tece[y['year']] = 0
-        tme[y['year']] = 0
-        for r in records:
-            if r['year'] == y['year']:
-                if r['placement_type'] != "HIGHER STUDIES":
-                    for z in studentrecord:
-                        if z.record_id.name == r['name'] and z.record_id.year == r['year'] and z.unique_id.id.department.name == "CSE":
-                            tcse[y['year']] = tcse[y['year']]+1
-                            r['name__count'] = r['name__count']+1
-                        if z.record_id.name == r['name'] and z.record_id.year == r['year'] and z.unique_id.id.department.name == "ECE":
-                            tece[y['year']] = tece[y['year']]+1
-                            r['year__count'] = r['year__count']+1
-                        if z.record_id.name == r['name'] and z.record_id.year == r['year'] and z.unique_id.id.department.name == "ME":
-                            tme[y['year']] = tme[y['year']]+1
-                            r['placement_type__count'] = r['placement_type__count']+1
-        tadd[y['year']] = tcse[y['year']]+tece[y['year']]+tme[y['year']]
-        y['year__count'] = [tadd[y['year']], tcse[y['year']], tece[y['year']], tme[y['year']]]
+    years, records, all_records = selectors.build_statistics_summary()
 
     form2 = SearchPlacementRecord(initial={})
     form3 = SearchPbiRecord(initial={})
     form4 = SearchHigherRecord(initial={})
 
 
-    current1 = HoldsDesignation.objects.filter(Q(working=user, designation__name="placement chairman"))
-    current2 = HoldsDesignation.objects.filter(Q(working=user, designation__name="placement officer"))
-    current = HoldsDesignation.objects.filter(Q(working=user, designation__name="student"))
+    role_assignments = selectors.get_role_assignments(user)
+    current1 = role_assignments['current1']
+    current2 = role_assignments['current2']
+    current = role_assignments['current']
 
     if len(current1)!=0 or len(current2)!=0:
         delete_operation = 1
@@ -891,9 +850,10 @@ def Placement__Schedule(request):
 
 
     form5 = AddSchedule(initial={})
-    current1 = HoldsDesignation.objects.filter(Q(working=user, designation__name="placement chairman"))
-    current2 = HoldsDesignation.objects.filter(Q(working=user, designation__name="placement officer"))
-    current = HoldsDesignation.objects.filter(Q(working=user, designation__name="student"))
+    role_assignments = selectors.get_role_assignments(user)
+    current1 = role_assignments['current1']
+    current2 = role_assignments['current2']
+    current = role_assignments['current']
     print(current)
 
     # If the user is Student
@@ -903,30 +863,20 @@ def Placement__Schedule(request):
         # Student view for showing accepted or declined schedule
         if request.method == 'POST':
             if 'studentapprovesubmit' in request.POST:
-                status = PlacementStatus.objects.select_related('unique_id','notify_id').filter(
-                    pk=request.POST['studentapprovesubmit']).update(
-                    invitation='ACCEPTED',
-                    timestamp=timezone.now())
+                services.update_invitation_response(
+                    request.POST['studentapprovesubmit'],
+                    'ACCEPTED',
+                )
             if 'studentdeclinesubmit' in request.POST:
-                status = PlacementStatus.objects.select_related('unique_id','notify_id').filter(
-                    Q(pk=request.POST['studentdeclinesubmit'])).update(
-                    invitation='REJECTED',
-                    timestamp=timezone.now())
+                services.update_invitation_response(
+                    request.POST['studentdeclinesubmit'],
+                    'REJECTED',
+                )
 
             if 'educationsubmit' in request.POST:
                 form = AddEducation(request.POST)
                 if form.is_valid():
-                    institute = form.cleaned_data['institute']
-                    degree = form.cleaned_data['degree']
-                    grade = form.cleaned_data['grade']
-                    stream = form.cleaned_data['stream']
-                    sdate = form.cleaned_data['sdate']
-                    edate = form.cleaned_data['edate']
-                    education_obj = Education.objects.select_related('unique_id').create(
-                        unique_id=student, degree=degree,
-                        grade=grade, institute=institute,
-                        stream=stream, sdate=sdate, edate=edate)
-                    education_obj.save()
+                    services.create_education(student, form.cleaned_data)
             if 'profilesubmit' in request.POST:
                 about_me = request.POST.get('about')
                 age = request.POST.get('age')
@@ -954,137 +904,62 @@ def Placement__Schedule(request):
             if 'skillsubmit' in request.POST:
                 form = AddSkill(request.POST)
                 if form.is_valid():
-                    skill = form.cleaned_data['skill']
-                    skill_rating = form.cleaned_data['skill_rating']
-                    has_obj = Has.objects.select_related('skill_id','unique_id').create(unique_id=student,
-                                                 skill_id=Skill.objects.get(skill=skill),
-                                                 skill_rating = skill_rating)
-                    has_obj.save()
+                    services.create_skill_assignment(
+                        student,
+                        form.cleaned_data['skill'],
+                        form.cleaned_data['skill_rating'],
+                    )
             if 'achievementsubmit' in request.POST:
                 form = AddAchievement(request.POST)
                 if form.is_valid():
-                    achievement = form.cleaned_data['achievement']
-                    achievement_type = form.cleaned_data['achievement_type']
-                    description = form.cleaned_data['description']
-                    issuer = form.cleaned_data['issuer']
-                    date_earned = form.cleaned_data['date_earned']
-                    achievement_obj = Achievement.objects.select_related('unique_id').create(unique_id=student,
-                                                                 achievement=achievement,
-                                                                 achievement_type=achievement_type,
-                                                                 description=description,
-                                                                 issuer=issuer,
-                                                                 date_earned=date_earned)
-                    achievement_obj.save()
+                    services.create_achievement(student, form.cleaned_data)
             if 'publicationsubmit' in request.POST:
                 form = AddPublication(request.POST)
                 if form.is_valid():
-                    publication_title = form.cleaned_data['publication_title']
-                    description = form.cleaned_data['description']
-                    publisher = form.cleaned_data['publisher']
-                    publication_date = form.cleaned_data['publication_date']
-                    publication_obj = Publication.objects.select_related('unique_id').create(unique_id=student,
-                                                                 publication_title=
-                                                                 publication_title,
-                                                                 publisher=publisher,
-                                                                 description=description,
-                                                                 publication_date=publication_date)
-                    publication_obj.save()
+                    services.create_publication(student, form.cleaned_data)
             if 'patentsubmit' in request.POST:
                 form = AddPatent(request.POST)
                 if form.is_valid():
-                    patent_name = form.cleaned_data['patent_name']
-                    description = form.cleaned_data['description']
-                    patent_office = form.cleaned_data['patent_office']
-                    patent_date = form.cleaned_data['patent_date']
-                    patent_obj = Patent.objects.select_related('unique_id').create(unique_id=student, patent_name=patent_name,
-                                                       patent_office=patent_office,
-                                                       description=description,
-                                                       patent_date=patent_date)
-                    patent_obj.save()
+                    services.create_patent(student, form.cleaned_data)
             if 'coursesubmit' in request.POST:
                 form = AddCourse(request.POST)
                 if form.is_valid():
-                    course_name = form.cleaned_data['course_name']
-                    description = form.cleaned_data['description']
-                    license_no = form.cleaned_data['license_no']
-                    sdate = form.cleaned_data['sdate']
-                    edate = form.cleaned_data['edate']
-                    course_obj = Course.objects.select_related('unique_id').create(unique_id=student, course_name=course_name,
-                                                       license_no=license_no,
-                                                       description=description,
-                                                       sdate=sdate, edate=edate)
-                    course_obj.save()
+                    services.create_course(student, form.cleaned_data)
             if 'projectsubmit' in request.POST:
                 form = AddProject(request.POST)
                 if form.is_valid():
-                    project_name = form.cleaned_data['project_name']
-                    project_status = form.cleaned_data['project_status']
-                    summary = form.cleaned_data['summary']
-                    project_link = form.cleaned_data['project_link']
-                    sdate = form.cleaned_data['sdate']
-                    edate = form.cleaned_data['edate']
-                    project_obj = Project.objects.create(unique_id=student, summary=summary,
-                                                         project_name=project_name,
-                                                         project_status=project_status,
-                                                         project_link=project_link,
-                                                         sdate=sdate, edate=edate)
-                    project_obj.save()
+                    services.create_project(student, form.cleaned_data)
             if 'experiencesubmit' in request.POST:
                 form = AddExperience(request.POST)
                 if form.is_valid():
-                    title = form.cleaned_data['title']
-                    status = form.cleaned_data['status']
-                    company = form.cleaned_data['company']
-                    location = form.cleaned_data['location']
-                    description = form.cleaned_data['description']
-                    sdate = form.cleaned_data['sdate']
-                    edate = form.cleaned_data['edate']
-                    experience_obj = Experience.objects.select_related('unique_id').create(unique_id=student, title=title,
-                                                               company=company, location=location,
-                                                               status=status,
-                                                               description=description,
-                                                               sdate=sdate, edate=edate)
-                    experience_obj.save()
+                    services.create_experience(student, form.cleaned_data)
 
             if 'deleteskill' in request.POST:
                 hid = request.POST['deleteskill']
-                hs = Has.objects.select_related('skill_id','unique_id').get(Q(pk=hid))
-                hs.delete()
+                services.delete_student_related_record(Has, hid)
             if 'deleteedu' in request.POST:
                 hid = request.POST['deleteedu']
-                hs = Education.objects.select_related('unique_id').get(Q(pk=hid))
-                hs.delete()
+                services.delete_student_related_record(Education, hid)
             if 'deletecourse' in request.POST:
                 hid = request.POST['deletecourse']
-                hs = Course.objects.get(Q(pk=hid))
-                hs.delete()
+                services.delete_student_related_record(Course, hid)
             if 'deleteexp' in request.POST:
                 hid = request.POST['deleteexp']
-                hs = Experience.objects.get(Q(pk=hid))
-                hs.delete()
+                services.delete_student_related_record(Experience, hid)
             if 'deletepro' in request.POST:
                 hid = request.POST['deletepro']
-                hs = Project.objects.get(Q(pk=hid))
-                hs.delete()
+                services.delete_student_related_record(Project, hid)
             if 'deleteach' in request.POST:
                 hid = request.POST['deleteach']
-                hs = Achievement.objects.get(Q(pk=hid))
-                hs.delete()
+                services.delete_student_related_record(Achievement, hid)
             if 'deletepub' in request.POST:
                 hid = request.POST['deletepub']
-                hs = Publication.objects.select_related('unique_id').get(Q(pk=hid))
-                hs.delete()
+                services.delete_student_related_record(Publication, hid)
             if 'deletepat' in request.POST:
                 hid = request.POST['deletepat']
-                hs = Patent.objects.get(Q(pk=hid))
-                hs.delete()
+                services.delete_student_related_record(Patent, hid)
 
-        placementschedule = PlacementSchedule.objects.select_related('notify_id').filter(
-            Q(placement_date__gte=date.today())).values_list('notify_id', flat=True)
-
-        placementstatus = PlacementStatus.objects.select_related('unique_id','notify_id').filter(
-            Q(unique_id=student,
-            notify_id__in=placementschedule)).order_by('-timestamp')
+        placementstatus = selectors.list_student_active_statuses(student)
 
 
         check_invitation_date(placementstatus)
@@ -1097,9 +972,7 @@ def Placement__Schedule(request):
     if 'deletesch' in request.POST:
         delete_sch_key = request.POST['delete_sch_key']
         try:
-            placement_schedule = PlacementSchedule.objects.select_related('notify_id').get(pk = delete_sch_key)
-            NotifyStudent.objects.get(pk=placement_schedule.notify_id.id).delete()
-            placement_schedule.delete()
+            services.delete_schedule(delete_sch_key)
             messages.success(request, 'Schedule Deleted Successfully')
         except Exception as e:
             messages.error(request, 'Problem Occurred for Schedule Delete!!!')
@@ -1108,44 +981,8 @@ def Placement__Schedule(request):
     if 'schedulesubmit' in request.POST:
         form5 = AddSchedule(request.POST, request.FILES)
         if form5.is_valid():
-            company_name = form5.cleaned_data['company_name']
-            placement_date = form5.cleaned_data['placement_date']
-            location = form5.cleaned_data['location']
-            ctc = form5.cleaned_data['ctc']
-            time = form5.cleaned_data['time']
-            attached_file = form5.cleaned_data['attached_file']
-            placement_type = form5.cleaned_data['placement_type']
             role_offered = request.POST.get('role')
-            description = form5.cleaned_data['description']
-
-            try:
-                comp_name = CompanyDetails.objects.filter(company_name=company_name)[0]
-            except:
-                CompanyDetails.objects.create(company_name=company_name)
-
-            try:
-                role = Role.objects.filter(role=role_offered)[0]
-            except:
-                role = Role.objects.create(role=role_offered)
-                role.save()
-
-
-            notify = NotifyStudent.objects.create(placement_type=placement_type,
-                                                  company_name=company_name,
-                                                  description=description,
-                                                  ctc=ctc,
-                                                  timestamp=timezone.now())
-
-            schedule = PlacementSchedule.objects.select_related('notify_id').create(notify_id=notify,
-                                                        title=company_name,
-                                                        description=description,
-                                                        placement_date=placement_date,
-                                                        attached_file = attached_file,
-                                                        role=role,
-                                                        location=location, time=time)
-
-            notify.save()
-            schedule.save()
+            services.create_schedule(form5.cleaned_data, role_offered)
             messages.success(request, "Schedule Added Successfull!!")
 
 
@@ -1216,16 +1053,13 @@ def invite_status(request):
             request.session['mn_cname'] = cname
             request.session['mn_rollno'] = rollno
 
-            placementstatus_placement = PlacementStatus.objects.select_related('unique_id','notify_id').filter(Q(notify_id__in=NotifyStudent.objects.filter
-                                                       (Q(placement_type="PLACEMENT",
-                                                          company_name__icontains=cname,
-                                                          ctc__gte=ctc)),
-                                                       unique_id__in=Student.objects.filter
-                                                       ((Q(id__in=ExtraInfo.objects.filter
-                                                           (Q(user__in=User.objects.filter
-                                                              (Q(first_name__icontains=stuname)),
-                                                              id__icontains=rollno))
-                                                           )))))
+            placementstatus_placement = selectors.search_invitation_statuses(
+                "PLACEMENT",
+                student_name=stuname,
+                ctc=ctc,
+                company_name=cname,
+                rollno=rollno,
+            )
             # pagination stuff starts from here
             total_query = placementstatus_placement.count()
 
@@ -1261,16 +1095,13 @@ def invite_status(request):
             mnpbi_post = 0
             no_pagination = 1
             try:
-                placementstatus_placement = PlacementStatus.objects.select_related('unique_id','notify_id').filter(Q(notify_id__in=NotifyStudent.objects.filter
-                                                       (Q(placement_type="PLACEMENT",
-                                                          company_name__icontains=request.session['mn_cname'],
-                                                          ctc__gte=request.session['mn_ctc'])),
-                                                       unique_id__in=Student.objects.filter
-                                                       ((Q(id__in=ExtraInfo.objects.filter
-                                                           (Q(user__in=User.objects.filter
-                                                              (Q(first_name__icontains=request.session['mn_stuname'])),
-                                                              id__icontains=request.session['mn_rollno']))
-                                                           )))))
+                placementstatus_placement = selectors.search_invitation_statuses(
+                    "PLACEMENT",
+                    student_name=request.session['mn_stuname'],
+                    ctc=request.session['mn_ctc'],
+                    company_name=request.session['mn_cname'],
+                    rollno=request.session['mn_rollno'],
+                )
             except:
                 placementstatus_placement = []
 
@@ -1331,16 +1162,13 @@ def invite_status(request):
             request.session['mn_pbi_ctc'] = ctc
             request.session['mn_pbi_cname'] = cname
             request.session['mn_pbi_rollno'] = rollno
-            placementstatus_pbi = PlacementStatus.objects.select_related('unique_id','notify_id').filter(
-                Q(notify_id__in=NotifyStudent.objects.filter(
-                Q(placement_type="PBI",
-                company_name__icontains=cname,
-                ctc__gte=ctc)),
-                unique_id__in=Student.objects.filter(
-                (Q(id__in=ExtraInfo.objects.filter(
-                Q(user__in=User.objects.filter(
-                Q(first_name__icontains=stuname)),
-                id__icontains=rollno))))))).order_by('id')
+            placementstatus_pbi = selectors.search_invitation_statuses_ordered(
+                "PBI",
+                student_name=stuname,
+                ctc=ctc,
+                company_name=cname,
+                rollno=rollno,
+            )
 
             total_query = placementstatus_pbi.count()
 
@@ -1375,17 +1203,13 @@ def invite_status(request):
             mnpbi_post = 1
             no_pagination = 1
             try:
-                placementstatus_pbi = PlacementStatus.objects.select_related('unique_id','notify_id').filter(
-                    Q(notify_id__in=NotifyStudent.objects.filter(
-                    Q(placement_type="PBI",
-                    company_name__icontains=request.session['mn_pbi_cname'],
-                                              ctc__gte=request.session['mn_pbi_ctc'])),
-                                           unique_id__in=Student.objects.filter(
-                                            (Q(id__in=ExtraInfo.objects.filter(
-                                                Q(user__in=User.objects.filter(
-                    Q(first_name__icontains=request.session['mn_pbi_stuname'])),
-                                                  id__icontains=request.session['mn_pbi_rollno']))
-                                               )))))
+                placementstatus_pbi = selectors.search_invitation_statuses_ordered(
+                    "PBI",
+                    student_name=request.session['mn_pbi_stuname'],
+                    ctc=request.session['mn_pbi_ctc'],
+                    company_name=request.session['mn_pbi_cname'],
+                    rollno=request.session['mn_pbi_rollno'],
+                )
             except:
                 placementstatus_pbi = ''
 
@@ -1428,16 +1252,13 @@ def invite_status(request):
             cname = request.session['mn_cname']
             rollno = request.session['mn_rollno']
 
-            placementstatus = PlacementStatus.objects.select_related('unique_id','notify_id').filter(Q(notify_id__in=NotifyStudent.objects.filter
-                                                           (Q(placement_type="PLACEMENT",
-                                                              company_name__icontains=cname,
-                                                              ctc__gte=ctc)),
-                                                           unique_id__in=Student.objects.filter
-                                                           ((Q(id__in=ExtraInfo.objects.filter
-                                                               (Q(user__in=User.objects.filter
-                                                                  (Q(first_name__icontains=stuname)),
-                                                                  id__icontains=rollno))
-                                                               )))))
+            placementstatus = selectors.search_invitation_statuses(
+                "PLACEMENT",
+                student_name=stuname,
+                ctc=ctc,
+                company_name=cname,
+                rollno=rollno,
+            )
 
         if 'pdf_gen_invitation_status_pbi' in request.POST:
             stuname = request.session['mn_pbi_stuname']
@@ -1445,16 +1266,13 @@ def invite_status(request):
             cname = request.session['mn_pbi_cname']
             rollno = request.session['mn_pbi_rollno']
 
-            placementstatus = PlacementStatus.objects.select_related('unique_id','notify_id').filter(
-                Q(notify_id__in=NotifyStudent.objects.filter(
-                Q(placement_type="PBI",
-                company_name__icontains=cname,
-                ctc__gte=ctc)),
-                unique_id__in=Student.objects.filter(
-                (Q(id__in=ExtraInfo.objects.filter(
-                Q(user__in=User.objects.filter(
-                Q(first_name__icontains=stuname)),
-                id__icontains=rollno))))))).order_by('id')
+            placementstatus = selectors.search_invitation_statuses_ordered(
+                "PBI",
+                student_name=stuname,
+                ctc=ctc,
+                company_name=cname,
+                rollno=rollno,
+            )
 
         context = {
             'placementstatus' : placementstatus
@@ -1471,16 +1289,13 @@ def invite_status(request):
             cname = request.session['mn_cname']
             rollno = request.session['mn_rollno']
 
-            placementstatus = PlacementStatus.objects.select_related('unique_id','notify_id').filter(Q(notify_id__in=NotifyStudent.objects.filter
-                                                           (Q(placement_type="PLACEMENT",
-                                                              company_name__icontains=cname,
-                                                              ctc__gte=ctc)),
-                                                           unique_id__in=Student.objects.filter
-                                                           ((Q(id__in=ExtraInfo.objects.filter
-                                                               (Q(user__in=User.objects.filter
-                                                                  (Q(first_name__icontains=stuname)),
-                                                                  id__icontains=rollno))
-                                                               )))))
+            placementstatus = selectors.search_invitation_statuses(
+                "PLACEMENT",
+                student_name=stuname,
+                ctc=ctc,
+                company_name=cname,
+                rollno=rollno,
+            )
 
         if 'excel_gen_invitation_status_pbi' in request.POST:
             stuname = request.session['mn_pbi_stuname']
@@ -1488,16 +1303,13 @@ def invite_status(request):
             cname = request.session['mn_pbi_cname']
             rollno = request.session['mn_pbi_rollno']
 
-            placementstatus = PlacementStatus.objects.select_related('unique_id','notify_id').filter(
-                Q(notify_id__in=NotifyStudent.objects.filter(
-                Q(placement_type="PBI",
-                company_name__icontains=cname,
-                ctc__gte=ctc)),
-                unique_id__in=Student.objects.filter(
-                (Q(id__in=ExtraInfo.objects.filter(
-                Q(user__in=User.objects.filter(
-                Q(first_name__icontains=stuname)),
-                id__icontains=rollno))))))).order_by('id')
+            placementstatus = selectors.search_invitation_statuses_ordered(
+                "PBI",
+                student_name=stuname,
+                ctc=ctc,
+                company_name=cname,
+                rollno=rollno,
+            )
 
         context = {
             'placementstatus' : placementstatus
@@ -1514,8 +1326,9 @@ def invite_status(request):
     form9 = ManagePbiRecord(initial={})
     form11 = ManagePlacementRecord(initial={})
     form13 = SendInvite(initial={})
-    current1 = HoldsDesignation.objects.filter(Q(working=user, designation__name="placement chairman"))
-    current2 = HoldsDesignation.objects.filter(Q(working=user, designation__name="placement officer"))
+    role_assignments = selectors.get_role_assignments(user)
+    current1 = role_assignments['current1']
+    current2 = role_assignments['current2']
 
     context = {
         'form1': form1,
@@ -2958,19 +2771,16 @@ def placement(request):
                         stream=stream, sdate=sdate, edate=edate)
                     education_obj.save()
             if 'profilesubmit' in request.POST:
-                about_me = request.POST.get('about')
-                age = request.POST.get('age')
-                address = request.POST.get('address')
-                contact = request.POST.get('contact')
-                pic = request.POST.get('pic')
-
-                extrainfo_obj = ExtraInfo.objects.get(user=user)
-                extrainfo_obj.about_me = about_me
-                extrainfo_obj.age = age
-                extrainfo_obj.address = address
-                extrainfo_obj.phone_no = contact
-                extrainfo_obj.profile_picture = pic
-                extrainfo_obj.save()
+                services.update_profile(
+                    user,
+                    {
+                        'about_me': request.POST.get('about'),
+                        'age': request.POST.get('age'),
+                        'address': request.POST.get('address'),
+                        'contact': request.POST.get('contact'),
+                        'profile_picture': request.POST.get('pic'),
+                    },
+                )
                 profile = get_object_or_404(ExtraInfo, Q(user=user))
             if 'skillsubmit' in request.POST:
                 form = AddSkill(request.POST)
@@ -5248,9 +5058,7 @@ def delete_placement_statistics(request):
             elif 'deleterecordmanaged' in request.POST:
                 record_id = int(request.POST['deleterecordmanaged'])
 
-            student_record =  StudentRecord.objects.get(pk=record_id)
-            PlacementRecord.objects.get(id=student_record.record_id.id).delete()
-            student_record.delete()
+            services.delete_placement_statistics_record(record_id)
             messages.success(request, 'Placement Statistics deleted Successfully!!')
 
         except Exception as e:
@@ -5262,6 +5070,39 @@ def delete_placement_statistics(request):
         return redirect('/placement/manage_records/')
 
     return redirect('/placement/statistics/')
+
+
+def _build_resume_checks(request, current):
+    checks = {
+        'conferencecheck': '1',
+        'achievementcheck': '1',
+        'educationcheck': '1',
+        'publicationcheck': '1',
+        'patentcheck': '1',
+        'internshipcheck': '1',
+        'projectcheck': '1',
+        'coursecheck': '1',
+        'skillcheck': '1',
+        'extracurricularcheck': '1',
+        'reference_list': [],
+    }
+    if current and request.method == 'POST':
+        checks.update(
+            {
+                'achievementcheck': request.POST.get('achievementcheck'),
+                'educationcheck': request.POST.get('educationcheck'),
+                'publicationcheck': request.POST.get('publicationcheck'),
+                'patentcheck': request.POST.get('patentcheck'),
+                'internshipcheck': request.POST.get('internshipcheck'),
+                'projectcheck': request.POST.get('projectcheck'),
+                'coursecheck': request.POST.get('coursecheck'),
+                'skillcheck': request.POST.get('skillcheck'),
+                'reference_list': request.POST.getlist('reference_checkbox_list'),
+                'extracurricularcheck': request.POST.get('extracurricularcheck'),
+                'conferencecheck': request.POST.get('conferencecheck'),
+            }
+        )
+    return checks
 
 
 def cv(request, username):
@@ -5301,90 +5142,15 @@ def cv(request, username):
             patent = variable storing the patent data
     """
     user = request.user
-    profile = get_object_or_404(ExtraInfo, Q(user=user))
-
-    current = HoldsDesignation.objects.filter(Q(working=user, designation__name="student"))
-    if current:
-        if request.method == 'POST':
-            achievementcheck = request.POST.get('achievementcheck')
-            educationcheck = request.POST.get('educationcheck')
-            publicationcheck = request.POST.get('publicationcheck')
-            patentcheck = request.POST.get('patentcheck')
-            internshipcheck = request.POST.get('internshipcheck')
-            projectcheck = request.POST.get('projectcheck')
-            coursecheck = request.POST.get('coursecheck')
-            skillcheck = request.POST.get('skillcheck')
-            reference_list = request.POST.getlist('reference_checkbox_list')
-            extracurricularcheck = request.POST.get('extracurricularcheck')
-            conferencecheck =  request.POST.get('conferencecheck')
-    else:
-        conferencecheck = '1'
-        achievementcheck = '1'
-        educationcheck = '1'
-        publicationcheck = '1'
-        patentcheck = '1'
-        internshipcheck = '1'
-        projectcheck = '1'
-        coursecheck = '1'
-        skillcheck = '1'
-        extracurricularcheck = '1'
-
-
-
-    user = get_object_or_404(User, Q(username=username))
-    profile = get_object_or_404(ExtraInfo, Q(user=user))
-    student_info=get_object_or_404(Student,Q(id=user.username))
-
-    batch=student_info.batch
-
-    now = datetime.datetime.now()
-    print("year----->",now.year)
-    if now.year-batch<=4:
-        roll=now.year-batch
-    else:
-        roll=4
-    
-
-    student = get_object_or_404(Student, Q(id=profile.id))
-    skills = Has.objects.select_related('skill_id','unique_id').filter(Q(unique_id=student))
-    education = Education.objects.select_related('unique_id').filter(Q(unique_id=student))
-    reference = Reference.objects.filter(id__in=reference_list)
-    course = Course.objects.select_related('unique_id').filter(Q(unique_id=student))
-    experience = Experience.objects.select_related('unique_id').filter(Q(unique_id=student))
-    project = Project.objects.select_related('unique_id').filter(Q(unique_id=student))
-    achievement = Achievement.objects.select_related('unique_id').filter(Q(unique_id=student))
-    extracurricular = Extracurricular.objects.select_related('unique_id').filter(Q(unique_id=student))
-    conference = Conference.objects.select_related('unique_id').filter(Q(unique_id=student))
-    publication = Publication.objects.select_related('unique_id').filter(Q(unique_id=student))
-    patent = Patent.objects.select_related('unique_id').filter(Q(unique_id=student))
-    today = datetime.date.today()
-
-    if len(reference) == 0:
-        referencecheck = '0'
-    else:
-        referencecheck = '1'
-
-    return render_to_pdf('placementModule/cv.html', {'pagesize': 'A4', 'user': user, 'references': reference,
-                                                     'profile': profile, 'projects': project,
-                                                     'skills': skills, 'educations': education,
-                                                     'courses': course, 'experiences': experience,
-                                                     'referencecheck': referencecheck,
-                                                     'achievements': achievement,
-                                                     'extracurriculars': extracurricular,
-                                                     'publications': publication,
-                                                     'patents': patent, 'roll': roll,
-                                                     'achievementcheck': achievementcheck,
-                                                     'extracurricularcheck': extracurricularcheck,
-                                                     'educationcheck': educationcheck,
-                                                     'publicationcheck': publicationcheck,
-                                                     'patentcheck': patentcheck,
-                                                     'conferencecheck': conferencecheck,
-                                                     'conferences': conference,
-                                                     'internshipcheck': internshipcheck,
-                                                     'projectcheck': projectcheck,
-                                                     'coursecheck': coursecheck,
-                                                     'skillcheck': skillcheck,
-                                                     'today':today})
+    current = selectors.get_role_assignments(user)['current']
+    checks = _build_resume_checks(request, current)
+    context = services.build_cv_render_context(
+        request_user=user,
+        username=username,
+        checks=checks,
+        roll_strategy='batch',
+    )
+    return render_to_pdf('placementModule/cv.html', context)
 
 
 def render_to_pdf(template_src, context_dict):
@@ -5492,90 +5258,15 @@ def resume(request, username):
             patent = variable storing the patent data
     """
     user = request.user
-    profile = get_object_or_404(ExtraInfo, Q(user=user))
-
-    current = HoldsDesignation.objects.filter(Q(working=user, designation__name="student"))
-    if current:
-        if request.method == 'POST':
-            achievementcheck = request.POST.get('achievementcheck')
-            educationcheck = request.POST.get('educationcheck')
-            publicationcheck = request.POST.get('publicationcheck')
-            patentcheck = request.POST.get('patentcheck')
-            internshipcheck = request.POST.get('internshipcheck')
-            projectcheck = request.POST.get('projectcheck')
-            coursecheck = request.POST.get('coursecheck')
-            skillcheck = request.POST.get('skillcheck')
-            reference_list = request.POST.getlist('reference_checkbox_list')
-            extracurricularcheck = request.POST.get('extracurricularcheck')
-            conferencecheck =  request.POST.get('conferencecheck')
-    else:
-        conferencecheck = '1'
-        achievementcheck = '1'
-        educationcheck = '1'
-        publicationcheck = '1'
-        patentcheck = '1'
-        internshipcheck = '1'
-        projectcheck = '1'
-        coursecheck = '1'
-        skillcheck = '1'
-        extracurricularcheck = '1'
-
-
-    # print(achievementcheck,' ',educationcheck,' ',publicationcheck,' ',patentcheck,' ',internshipcheck,' ',projectcheck,' \n\n\n')
-    user = get_object_or_404(User, Q(username=username))
-    profile = get_object_or_404(ExtraInfo, Q(user=user))
-    now = datetime.datetime.now()
-    if int(str(profile.id)[:2]) == 20:
-        if (now.month>4):
-          roll = 1+now.year-int(str(profile.id)[:4])
-        else:
-          roll = now.year-int(str(profile.id)[:4])
-    else:
-        if (now.month>4):
-          roll = 1+(now.year)-int("20"+str(profile.id)[0:2])
-        else:
-          roll = (now.year)-int("20"+str(profile.id)[0:2])
-
-    student = get_object_or_404(Student, Q(id=profile.id))
-    skills = Has.objects.select_related('skill_id','unique_id').filter(Q(unique_id=student))
-    education = Education.objects.select_related('unique_id').filter(Q(unique_id=student))
-    reference = Reference.objects.filter(id__in=reference_list)
-    course = Course.objects.select_related('unique_id').filter(Q(unique_id=student))
-    experience = Experience.objects.select_related('unique_id').filter(Q(unique_id=student))
-    project = Project.objects.select_related('unique_id').filter(Q(unique_id=student))
-    achievement = Achievement.objects.select_related('unique_id').filter(Q(unique_id=student))
-    extracurricular = Extracurricular.objects.select_related('unique_id').filter(Q(unique_id=student))
-    conference = Conference.objects.select_related('unique_id').filter(Q(unique_id=student))
-    publication = Publication.objects.select_related('unique_id').filter(Q(unique_id=student))
-    patent = Patent.objects.select_related('unique_id').filter(Q(unique_id=student))
-    today = datetime.date.today()
-
-    if len(reference) == 0:
-        referencecheck = '0'
-    else:
-        referencecheck = '1'
-
-    return render_to_pdf('placementModule/cv.html', {'pagesize': 'A4', 'user': user, 'references': reference,
-                                                     'profile': profile, 'projects': project,
-                                                     'skills': skills, 'educations': education,
-                                                     'courses': course, 'experiences': experience,
-                                                     'referencecheck': referencecheck,
-                                                     'achievements': achievement,
-                                                     'extracurriculars': extracurricular,
-                                                     'publications': publication,
-                                                     'patents': patent, 'roll': roll,
-                                                     'achievementcheck': achievementcheck,
-                                                     'extracurricularcheck': extracurricularcheck,
-                                                     'educationcheck': educationcheck,
-                                                     'publicationcheck': publicationcheck,
-                                                     'patentcheck': patentcheck,
-                                                     'conferencecheck': conferencecheck,
-                                                     'conferences': conference,
-                                                     'internshipcheck': internshipcheck,
-                                                     'projectcheck': projectcheck,
-                                                     'coursecheck': coursecheck,
-                                                     'skillcheck': skillcheck,
-                                                     'today':today})
+    current = selectors.get_role_assignments(user)['current']
+    checks = _build_resume_checks(request, current)
+    context = services.build_cv_render_context(
+        request_user=user,
+        username=username,
+        checks=checks,
+        roll_strategy='legacy',
+    )
+    return render_to_pdf('placementModule/cv.html', context)
 
 
 
@@ -5668,38 +5359,29 @@ def placement_schedule_save(request):
     if request.method!="POST":
         return HttpResponse("Method Not Allowed")
     else:
-        placement_type=request.POST.get("placement_type")
-        company_name=request.POST.get("company_name")
-        ctc=request.POST.get("ctc")
-        description=request.POST.get("description")
-        timestamp=request.POST.get("time_stamp")
-        title=request.POST.get("title")
-        location = request.POST.get("location")
-        role = request.POST.get("role")
-        resume = request.POST.get("resume")
-        schedule_at = request.POST.get("schedule_at")
-        date = request.POST.get("placement_date")
+        form = AddSchedule(request.POST, request.FILES)
         try:
-            role_create=Role.objects.create(role=role)
-            notify = NotifyStudent.objects.create(placement_type=placement_type,
-                                                      company_name=company_name,
-                                                      description=description,
-                                                      ctc=ctc,
-                                                      timestamp=timestamp)
-
-            schedule = PlacementSchedule.objects.create(notify_id=notify,
-                                                                                        title=company_name,
-                                                                                        description=description,
-                                                                                        placement_date=date,
-                                                                                        attached_file=resume,
-                                                                                        role=role_create,
-                                                                                        location=location, time=schedule_at)
-            print(schedule)
-            notify.save()
-            schedule.save()
-            messages.success(request,"Successfully Added Schedule")
+            if form.is_valid():
+                services.create_schedule_from_payload(
+                    {
+                        'placement_type': form.cleaned_data['placement_type'],
+                        'company_name': form.cleaned_data['company_name'],
+                        'ctc': form.cleaned_data['ctc'],
+                        'description': form.cleaned_data['description'],
+                        'title': request.POST.get("title"),
+                        'location': form.cleaned_data['location'],
+                        'attached_file': form.cleaned_data['attached_file'],
+                        'schedule_at': request.POST.get("schedule_at"),
+                        'placement_date': form.cleaned_data['placement_date'],
+                        'time': form.cleaned_data['time'],
+                    },
+                    request.POST.get("role"),
+                )
+                messages.success(request,"Successfully Added Schedule")
+            else:
+                messages.error(request,"Failed to Add Schedule")
             return redirect("/placement/add_placement_schedule/")
-        except:
+        except Exception:
             messages.error(request,"Failed to Add Schedule")
             return redirect("/placement/add_placement_schedule/")
 
@@ -5741,21 +5423,15 @@ def placement_record_save(request):
     if request.method!="POST":
         return HttpResponse("Method Not Allowed")
     else:
-        placement_type=request.POST.get("placement_type")
-        print(placement_type)
-        student_name=request.POST.get("student_name")
-        ctc=request.POST.get("ctc")
-        year=request.POST.get("year")
-        test_type=request.POST.get("test_type")
-        test_score=request.POST.get("test_score")
+        form = PlacementRecordSaveForm(request.POST)
         try:
-            print("In try!!!")
-            record = PlacementRecord.objects.create(placement_type=placement_type,name=student_name,ctc=ctc,year=year,test_type=test_type,test_score=test_score)
-            print(record)
-            record.save()
-            messages.success(request,"Successfully Added Record")
+            if form.is_valid():
+                services.create_placement_record(form.cleaned_data)
+                messages.success(request,"Successfully Added Record")
+            else:
+                messages.error(request,"Failed to Add Schedule")
             return redirect("/placement/add_placement_record/")
-        except:
+        except Exception:
             messages.error(request,"Failed to Add Schedule")
             return redirect("/placement/add_placement_record/")
 
@@ -5774,37 +5450,27 @@ def add_placement_visit(request):
     }
     return render(request, 'placementModule/add_placement_visits.html', context)
 
-def update_placement_data(request):
-    add_record_tab = 1
-    user=request.user
-    current2 = HoldsDesignation.objects.filter(Q(working=user, designation__name="placement officer"))
-    current = HoldsDesignation.objects.filter(Q(working=user, designation__name="student"))
-
-    #print(all_record_data)
-    context = {
-        'add_record_tab': add_record_tab,
-        'current':current,
-        'current2':current2,
-    }
-    return render(request, 'placementModule/add_placement_record.html', context)
 def placement_visit_save(request):
     if request.method!="POST":
         return HttpResponse("Method Not Allowed")
     else:
-        company_name=request.POST.get("cname")
-        location=request.POST.get("location")
-        desc=request.POST.get("desc")
-        date=request.POST.get("date")
-        timestamp=request.POST.get("timed")
+        form = ChairmanVisitSaveForm(
+            {
+                "company_name": request.POST.get("cname"),
+                "location": request.POST.get("location"),
+                "description": request.POST.get("desc"),
+                "visiting_date": request.POST.get("date"),
+            }
+        )
 
         try:
-            print("In try!!!")
-            record = ChairmanVisit.objects.create(company_name=company_name,location=location,visiting_date=date,description=desc,timestamp=timestamp)
-
-            record.save()
-            messages.success(request,"Successfully Added Chairman Visit")
+            if form.is_valid():
+                services.create_chairman_visit(form.cleaned_data)
+                messages.success(request,"Successfully Added Chairman Visit")
+            else:
+                messages.error(request,"Failed to Add Chairman Visit")
             return redirect("/placement/add_placement_visit/")
-        except:
+        except Exception:
             messages.error(request,"Failed to Add Chairman Visit")
             return redirect("/placement/add_placement_visit/")
 

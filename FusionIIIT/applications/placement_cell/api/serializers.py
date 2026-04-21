@@ -5,6 +5,7 @@ from applications.placement_cell.models import (Achievement, Course, Education,
                                                 Experience, Has, Patent,
                                                 Project, Publication, Skill,
                                                 PlacementStatus, NotifyStudent)
+from applications.placement_cell import services
 
 class SkillSerializer(serializers.ModelSerializer):
 
@@ -20,13 +21,10 @@ class HasSerializer(serializers.ModelSerializer):
         fields = ('skill_id','skill_rating')
 
     def create(self, validated_data):
-        skill = validated_data.pop('skill_id')
-        skill_id, created = Skill.objects.get_or_create(**skill)
         try:
-            has_obj = Has.objects.create(skill_id=skill_id,**validated_data)
-        except:
+            return services.create_skill_assignment_from_validated_data(validated_data)
+        except ValueError:
             raise serializers.ValidationError({'skill': 'This skill is already present'})
-        return has_obj
 
 class EducationSerializer(serializers.ModelSerializer):
 

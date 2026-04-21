@@ -2,6 +2,7 @@ import datetime
 from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext as _
+from django.core.exceptions import ValidationError
 
 from applications.academic_information.models import Student
 
@@ -9,46 +10,53 @@ from applications.academic_information.models import Student
 
 
 class Constants:
-    RESUME_TYPE = (
-        ('ONGOING', 'Ongoing'),
-        ('COMPLETED', 'Completed'),
-    )
+    class ResumeType(models.TextChoices):
+        ONGOING = "ONGOING", "Ongoing"
+        COMPLETED = "COMPLETED", "Completed"
 
-    ACHIEVEMENT_TYPE = (
-        ('EDUCATIONAL', 'Educational'),
-        ('OTHER', 'Other'),
-    )
+    class AchievementType(models.TextChoices):
+        EDUCATIONAL = "EDUCATIONAL", "Educational"
+        OTHER = "OTHER", "Other"
 
-    EVENT_TYPE = (
-        ('SOCIAL', 'Social'),
-        ('CULTURE', 'Culture'),
-        ('SPORT', 'Sport'),
-        ('OTHER', 'Other'),
-    )
+    class EventType(models.TextChoices):
+        SOCIAL = "SOCIAL", "Social"
+        CULTURE = "CULTURE", "Culture"
+        SPORT = "SPORT", "Sport"
+        OTHER = "OTHER", "Other"
 
-    INVITATION_TYPE = (
-        ('ACCEPTED', 'Accepted'),
-        ('REJECTED', 'Rejected'),
-        ('PENDING', 'Pending'),
-        ('IGNORE', 'IGNORE'),
-    )
+    class InvitationType(models.TextChoices):
+        ACCEPTED = "ACCEPTED", "Accepted"
+        REJECTED = "REJECTED", "Rejected"
+        PENDING = "PENDING", "Pending"
+        IGNORE = "IGNORE", "IGNORE"
 
-    PLACEMENT_TYPE = (
-        ('PLACEMENT', 'Placement'),
-        ('PBI', 'PBI'),
-        ('HIGHER STUDIES', 'Higher Studies'),
-        ('OTHER', 'Other'),
-    )
+    class PlacementType(models.TextChoices):
+        PLACEMENT = "PLACEMENT", "Placement"
+        PBI = "PBI", "PBI"
+        HIGHER_STUDIES = "HIGHER STUDIES", "Higher Studies"
+        OTHER = "OTHER", "Other"
 
-    PLACED_TYPE = (
-        ('NOT PLACED', 'Not Placed'),
-        ('PLACED', 'Placed'),
-    )
+    class PlacedType(models.TextChoices):
+        NOT_PLACED = "NOT PLACED", "Not Placed"
+        PLACED = "PLACED", "Placed"
 
-    DEBAR_TYPE = (
-        ('NOT DEBAR', 'Not Debar'),
-        ('DEBAR', 'Debar'),
-    )
+    class DebarType(models.TextChoices):
+        NOT_DEBAR = "NOT DEBAR", "Not Debar"
+        DEBAR = "DEBAR", "Debar"
+
+    RESUME_TYPE = ResumeType.choices
+
+    ACHIEVEMENT_TYPE = AchievementType.choices
+
+    EVENT_TYPE = EventType.choices
+
+    INVITATION_TYPE = InvitationType.choices
+
+    PLACEMENT_TYPE = PlacementType.choices
+
+    PLACED_TYPE = PlacedType.choices
+
+    DEBAR_TYPE = DebarType.choices
 
     BTECH_DEP = (
         ('CSE', 'CSE'),
@@ -125,29 +133,8 @@ class Education(models.Model):
     edate = models.DateField(null=True, blank=True)
 
     def clean(self):
-
-        sdate = self.cleaned_data.get("startdate")
-        stime = self.cleaned_data.get("starttime")
-        print(sdate, "sdate")
-        today = datetime.datetime.now() - datetime.timedelta(1)
-        print(today, "today")
-        k1 = stime.hour
-        k2 = stime.minute
-        k3 = stime.second
-        x = time(k1, k2, k3)
-        date = datetime.datetime.combine(sdate, x)
-        edate = self.cleaned_data.get("enddate")
-        etime = self.cleaned_data.get("endtime")
-        k1 = etime.hour
-        k2 = etime.minute
-        k3 = etime.second
-        end_date = datetime.datetime.combine(edate, datetime.time(k1, k2, k3))
-        print(date, end_date)
-        if(date < today):
-            raise forms.ValidationError("Invalid quiz Start Date")
-        elif(date > end_date):
-            raise forms.ValidationError("Start Date but me before End Date")
-        return self.cleaned_data
+        if self.sdate and self.edate and self.sdate > self.edate:
+            raise ValidationError("Start Date but me before End Date")
 
 
 class Experience(models.Model):
@@ -379,10 +366,9 @@ class PlacementSchedule(models.Model):
 
     @property
     def get_role(self):
-        try:
+        if self.role_id and self.role:
             return self.role.role
-        except:
-            return ''
+        return ""
 
 
 class StudentPlacement(models.Model):
