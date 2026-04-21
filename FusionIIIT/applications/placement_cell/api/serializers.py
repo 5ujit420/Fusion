@@ -1,3 +1,4 @@
+from django.db import IntegrityError
 from rest_framework.authtoken.models import Token
 from rest_framework import serializers
 
@@ -24,7 +25,7 @@ class HasSerializer(serializers.ModelSerializer):
         skill_id, created = Skill.objects.get_or_create(**skill)
         try:
             has_obj = Has.objects.create(skill_id=skill_id,**validated_data)
-        except:
+        except IntegrityError:
             raise serializers.ValidationError({'skill': 'This skill is already present'})
         return has_obj
 
