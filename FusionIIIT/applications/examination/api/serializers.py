@@ -16,7 +16,7 @@ class AnnouncementsSerializer(serializers.ModelSerializer):
         model = Announcements
         fields = ['maker_id', 'ann_date', 'message', 'batch', 'department', 'programme', 'upload_announcement']
 
-class AuthenticationSerializer(serializers.ModelSerializer):
+class AnnouncementDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = Announcements
         fields = '__all__'

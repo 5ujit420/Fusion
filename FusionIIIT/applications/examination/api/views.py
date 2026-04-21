@@ -95,124 +95,17 @@ def round_from_last_decimal(number, decimal_places=1):
     
 
 def calculate_spi_for_student(student, selected_semester, semester_type):
-    semester_unit = Decimal('0')
-    grades = (
-        Student_grades.objects
-            .filter(
-                roll_no=student.id_id,
-                semester=selected_semester,
-                semester_type=semester_type
-            )
-            .annotate(
-                semester_type_order=Case(
-                    When(semester_type="Odd Semester",    then=0),
-                    When(semester_type="Even Semester",   then=1),
-                    When(semester_type="Summer Semester", then=2),
-                    default=3,
-                    output_field=IntegerField(),
-                )
-            )
-            .order_by('semester', 'semester_type_order')
-    )
-    total_points = Decimal('0')
-    total_credits = Decimal('0')
-    for g in grades:
-        credit = Decimal(str(g.course_id.credit))
-        factor = grade_conversion.get(g.grade.strip(), -1)
-        if factor >= 0:
-            if factor != 0:
-                factor = Decimal(str(factor))
-                total_points += factor * credit
-                total_credits += credit
-            semester_unit += credit
-    return round_from_last_decimal(Decimal('10') * (total_points / total_credits)) if total_credits else 0, semester_unit, (total_points*10)
+    from applications.examination.services import calculate_spi_for_student_service
+    return calculate_spi_for_student_service(student, selected_semester, semester_type)
+
+from applications.examination.services import calculate_cpi_for_student_service
 
 def trace_registration(reg_id, mapping):
-    seen = set()
-    while reg_id in mapping and reg_id not in seen:
-        seen.add(reg_id)
-        reg_id = mapping[reg_id]
-    return reg_id
+    from applications.examination.services import trace_registration as _trace_registration
+    return _trace_registration(reg_id, mapping)
 
 def calculate_cpi_for_student(student, selected_semester, semester_type):
-    total_unit = Decimal('0')
-    if selected_semester % 2 == 0 and semester_type == 'Summer Semester':
-        grades = (
-            Student_grades.objects
-                .filter(roll_no=student.id_id, semester__lte=selected_semester)
-                .annotate(
-                    semester_type_order=Case(
-                        When(semester_type="Odd Semester",  then=0),
-                        When(semester_type="Even Semester", then=1),
-                        When(semester_type="Summer Semester", then=2),
-                        default=3,
-                        output_field=IntegerField(),
-                    )
-                )
-                .order_by('semester', 'semester_type_order')
-        )
-        registrations = (
-            course_registration.objects
-                .select_related('course_id', 'semester_id')
-                .filter(
-                    student_id=student,
-                    semester_id__semester_no__lte=selected_semester,
-                )
-                .annotate(
-                    semester_type_order=Case(
-                        When(semester_type="Odd Semester",    then=0),
-                        When(semester_type="Even Semester",   then=1),
-                        When(semester_type="Summer Semester", then=2),
-                        default=3,
-                        output_field=IntegerField(),
-                    )
-                )
-                .order_by('semester_id__semester_no', 'semester_type_order')
-        )
-    else :
-        grades = Student_grades.objects.filter(
-            roll_no=student.id_id, semester__lte=selected_semester,
-        ).exclude(semester_type = 'Summer Semester', semester = selected_semester)
-
-        registrations = course_registration.objects.select_related('course_id', 'semester_id').filter(
-            student_id=student,
-            semester_id__semester_no__lte=selected_semester
-        ).exclude(semester_type = 'Summer Semester', semester_id__semester_no = selected_semester)
-    reg_mapping = {}
-    for reg in registrations:
-        key = (reg.course_id.code.strip(), reg.semester_id.semester_no, reg.semester_type)
-        reg_mapping[key] = reg.id
-    replacements = course_replacement.objects.filter(
-        Q(old_course_registration__student_id=student) |
-        Q(new_course_registration__student_id=student)
-    ).select_related('old_course_registration', 'new_course_registration')
-    reg_replacement_map = {}
-    for rep in replacements:
-        old_reg_id = rep.old_course_registration.id
-        new_reg_id = rep.new_course_registration.id
-        if new_reg_id != old_reg_id:
-            reg_replacement_map[new_reg_id] = old_reg_id
-    grade_groups = defaultdict(list)
-    for g in grades:
-        key = (g.course_id.code.strip(), g.semester, g.semester_type)
-        reg_id = reg_mapping.get(key)
-        if reg_id is None:
-            continue
-        original_reg_id = trace_registration(reg_id, reg_replacement_map)
-        grade_groups[original_reg_id].append(g)
-    total_points = Decimal('0')
-    total_credits = Decimal('0')
-    for orig_reg, g_list in grade_groups.items():
-        best_record = max(g_list, key=lambda r: grade_conversion.get(r.grade.strip(), -1))
-        grade_factor = grade_conversion.get(best_record.grade.strip(), -1)
-        credit = Decimal(str(getattr(best_record.course_id, 'credit', 3)))
-        if grade_factor >=  0:
-            if grade_factor != 0:
-                grade_factor =  Decimal(str(grade_factor))
-                total_points += grade_factor * credit
-                total_credits += credit
-            total_unit += credit
-    return round_from_last_decimal(Decimal('10') * (total_points / total_credits)) if total_credits else 0, total_unit, (total_points*10)
+    return calculate_cpi_for_student_service(student, selected_semester, semester_type)
 
 def parse_academic_year(academic_year, semester_type):
     """
@@ -498,12 +391,6 @@ def check_course_students(request):
         if role not in allowed_roles:
             return Response({"error": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
 
-        course_info_query = course_registration.objects.filter(
-            course_id_id=course,
-            session=session_year,
-            semester_type=semester_type
-        )
-
         if programme_type:
             if programme_type.upper() == 'UG':
                 programme_list = ['B.Tech', 'B.Des']
@@ -514,18 +401,11 @@ def check_course_students(request):
                     {"error": "Invalid programme_type. Must be 'UG' or 'PG'."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-                
-            from applications.academic_information.models import Student
-            student_ids_with_programme = Student.objects.filter(
-                programme__in=programme_list
-            ).values_list('id', flat=True)
+        else:
+            programme_list = None
             
-            course_info_query = course_info_query.filter(
-                student_id__in=student_ids_with_programme
-            )
-        
-        has_students = course_info_query.exists()
-        student_count = course_info_query.count() if has_students else 0
+        from applications.examination.selectors import check_students_in_course as _check_students_in_course
+        has_students, student_count = _check_students_in_course(course, session_year, semester_type, programme_list)
 
         return Response({
             "has_students": has_students,
