@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework.authentication import TokenAuthentication
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import User  # kept for type hints only
 
 from .. import services
 from .. import selectors
@@ -58,21 +58,18 @@ class DashboardView(APIView):
     def get(self, request):
         user = request.user
         role = services.get_user_designation(user)
-        data = {'user_designation': role}
 
-        if role == 'Intender':
-            pending = selectors.get_pending_bookings_for_intender(user)
-            active = selectors.get_active_bookings_for_intender(user)
-            dashboard = selectors.get_dashboard_bookings_for_intender(user)
-        else:
-            pending = selectors.get_pending_bookings_all()
-            active = selectors.get_active_bookings_all()
-            dashboard = selectors.get_dashboard_bookings_all()
+        # T-03c: Duplicate if/else replaced with centralised service call
+        ctx = services.get_dashboard_data(user, role)
+        active = ctx['active_bookings']
 
-        data['pending_bookings'] = BookingDetailSerializer(pending, many=True).data
-        data['active_bookings'] = BookingDetailSerializer(active, many=True).data
-        data['dashboard_bookings'] = BookingDetailSerializer(dashboard, many=True).data
-        data['bills'] = services.calculate_active_bills(active)
+        data = {
+            'user_designation': role,
+            'pending_bookings': BookingDetailSerializer(ctx['pending_bookings'], many=True).data,
+            'active_bookings': BookingDetailSerializer(active, many=True).data,
+            'dashboard_bookings': BookingDetailSerializer(ctx['dashboard_bookings'], many=True).data,
+            'bills': services.calculate_active_bills(active),
+        }
         return Response(data)
 
 
@@ -90,26 +87,31 @@ class RequestBookingView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         d = serializer.validated_data
         try:
-            intender_user = User.objects.get(id=d['intender'])
-            booking = services.create_booking(
-                intender_user=intender_user, category=d['category'],
-                person_count=d['number_of_people'], purpose=d['purpose_of_visit'],
-                booking_from=d['booking_from'], booking_to=d['booking_to'],
-                arrival_time=d.get('booking_from_time', ''),
-                departure_time=d.get('booking_to_time', ''),
-                number_of_rooms=d['number_of_rooms'],
-                bill_to_be_settled_by=d['bill_settlement'],
-            )
-            visitor = services.create_visitor(
-                visitor_name=d['name'], visitor_phone=d['phone'],
-                visitor_email=d.get('email', ''), visitor_address=d.get('address', ''),
-                visitor_organization=d.get('organization', ''),
-                nationality=d.get('nationality', ''),
-            )
-            booking.visitor.add(visitor)
-            booking.save()
+            # T-01b: User lookup via selector; T-02b: unified service call
+            intender_user = selectors.get_user_by_id(d['intender'])
+            booking_data = {
+                'category': d['category'],
+                'person_count': d['number_of_people'],
+                'purpose': d['purpose_of_visit'],
+                'booking_from': d['booking_from'],
+                'booking_to': d['booking_to'],
+                'arrival_time': d.get('booking_from_time', ''),
+                'departure_time': d.get('booking_to_time', ''),
+                'number_of_rooms': d['number_of_rooms'],
+                'bill_to_be_settled_by': d['bill_settlement'],
+            }
+            visitor_data = {
+                'visitor_name': d['name'],
+                'visitor_phone': d['phone'],
+                'visitor_email': d.get('email', ''),
+                'visitor_address': d.get('address', ''),
+                'visitor_organization': d.get('organization', ''),
+                'nationality': d.get('nationality', ''),
+            }
             uploaded = request.FILES.get('files-during-booking-request')
-            services.handle_booking_attachment(booking, uploaded)
+            booking = services.create_booking_with_visitor(
+                intender_user, booking_data, visitor_data, uploaded
+            )
             return Response({'booking_id': booking.id}, status=status.HTTP_201_CREATED)
         except Exception as e:
             logger.error(f"Error creating booking: {e}")

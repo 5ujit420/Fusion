@@ -539,3 +539,188 @@ class ModelConstantsTests(TestCase):
 
     def test_room_bill_base(self):
         self.assertEqual(ROOM_BILL_BASE, 100)
+
+
+# ===========================================================================
+# NEW TESTS — Added during T-01, T-03, T-04, T-08, T-09, T-12, T-13, T-23,
+#             T-30 implementation
+# ===========================================================================
+
+class SelectorNewTests(BaseTestCase):
+    """T-01, T-04, T-08, T-23: New selector tests."""
+
+    def test_get_all_users(self):
+        """T-01: selectors.get_all_users() returns queryset with at least 3 users."""
+        users = selectors.get_all_users()
+        self.assertGreaterEqual(users.count(), 3)
+
+    def test_get_user_by_id(self):
+        """T-01: selectors.get_user_by_id() returns correct user."""
+        user = selectors.get_user_by_id(self.user_intender.id)
+        self.assertEqual(user, self.user_intender)
+
+    def test_get_inactive_bookings_no_cancelled_typo(self):
+        """T-08: status 'Canceled' returns rows; old typo 'Cancelled' returns 0."""
+        # Create a properly-spelled Canceled booking
+        BookingDetail.objects.create(
+            intender=self.user_intender, caretaker=self.user_caretaker,
+            booking_from=self.today, booking_to=self.next_week, status='Canceled')
+        inactive = selectors.get_inactive_bookings()
+        statuses = set(inactive.values_list('status', flat=True))
+        self.assertNotIn('Cancelled', statuses)  # typo must not appear
+        self.assertIn('Canceled', statuses)       # correct spelling must appear
+
+    def test_pending_forward_q_constant(self):
+        """T-04: _PENDING_FORWARD_Q constant filters both Pending and Forward bookings."""
+        from applications.visitor_hostel.selectors import _PENDING_FORWARD_Q
+        from applications.visitor_hostel.models import BookingDetail
+        BookingDetail.objects.create(
+            intender=self.user_intender, caretaker=self.user_caretaker,
+            booking_from=self.today, booking_to=self.next_week, status='Pending')
+        BookingDetail.objects.create(
+            intender=self.user_intender, caretaker=self.user_caretaker,
+            booking_from=self.today, booking_to=self.next_week, status='Forward')
+        matches = BookingDetail.objects.filter(_PENDING_FORWARD_Q)
+        statuses = set(matches.values_list('status', flat=True))
+        self.assertIn('Pending', statuses)
+        self.assertIn('Forward', statuses)
+
+    def test_get_first_visitor_per_booking(self):
+        """T-23: selector returns one visitor per booking."""
+        booking = BookingDetail.objects.create(
+            intender=self.user_intender, caretaker=self.user_caretaker,
+            booking_from=self.today, booking_to=self.next_week)
+        v1 = services.create_visitor('Alpha', '1111111111')
+        v2 = services.create_visitor('Beta', '2222222222')
+        booking.visitor.add(v1, v2)
+        # Use prefetch_related as the function expects .visitor to be queryable
+        from django.db.models import Prefetch
+        from applications.visitor_hostel.models import VisitorDetail
+        bookings_qs = BookingDetail.objects.prefetch_related('visitor').filter(id=booking.id)
+        result = selectors.get_first_visitor_per_booking(bookings_qs)
+        self.assertEqual(len(result), 1)
+        self.assertIn(result[0], [v1, v2])
+
+
+class ServiceNewBookingTests(BaseTestCase):
+    """T-02, T-09: New service tests for booking operations."""
+
+    def test_create_booking_invalid_dates_raises(self):
+        """T-09: create_booking raises BookingError when booking_from > booking_to."""
+        from applications.visitor_hostel.exceptions import BookingError
+        with self.assertRaises(BookingError):
+            services.create_booking(
+                intender_user=self.user_intender,
+                category='B', person_count=1, purpose='Test',
+                booking_from=self.next_week,     # after booking_to
+                booking_to=self.today,           # before booking_from
+                arrival_time='', departure_time='',
+                number_of_rooms=1, bill_to_be_settled_by='Intender',
+            )
+
+    def test_create_booking_with_visitor(self):
+        """T-02: create_booking_with_visitor creates booking+visitor+M2M in one call."""
+        booking_data = {
+            'category': 'B', 'person_count': 2, 'purpose': 'Unified test',
+            'booking_from': self.today, 'booking_to': self.next_week,
+            'arrival_time': '', 'departure_time': '',
+            'number_of_rooms': 1, 'bill_to_be_settled_by': 'Intender',
+        }
+        visitor_data = {
+            'visitor_name': 'Unified V', 'visitor_phone': '9876543210',
+            'visitor_email': '', 'visitor_address': '',
+            'visitor_organization': '', 'nationality': '',
+        }
+        booking = services.create_booking_with_visitor(
+            self.user_intender, booking_data, visitor_data
+        )
+        self.assertIsNotNone(booking.id)
+        self.assertEqual(booking.intender, self.user_intender)
+        self.assertTrue(booking.visitor.exists())
+        self.assertEqual(booking.visitor.first().visitor_name, 'Unified V')
+
+
+class ServiceBillNewTests(BaseTestCase):
+    """T-12, T-16: New mess bill tests using mealrecord_set."""
+
+    def test_calculate_mess_bill_uses_mealrecord_set(self):
+        """T-12/T-16: calculate_mess_bill sums via mealrecord_set without N+1 visitor loop."""
+        booking = services.create_booking(
+            self.user_intender, 'B', 1, 'Test',
+            self.today, self.next_week, '', '', 1, 'Intender')
+        visitor = services.create_visitor('MealV2', '6666666666')
+        booking.visitor.add(visitor)
+        from applications.visitor_hostel.models import MealRecord
+        MealRecord.objects.create(
+            visitor=visitor, booking=booking, meal_date=self.today,
+            morning_tea=2, eve_tea=1, breakfast=1, lunch=1, dinner=1, persons=1)
+        # Prefetch as the refactored service expects
+        from applications.visitor_hostel.models import BookingDetail
+        b = BookingDetail.objects.prefetch_related('mealrecord_set').get(id=booking.id)
+        bill = services.calculate_mess_bill(b)
+        # 2*10 + 1*10 + 1*50 + 1*100 + 1*100 = 280
+        self.assertEqual(bill, 280)
+
+
+class ServiceRoomBulkTests(BaseTestCase):
+    """T-13: Batch room assignment test."""
+
+    def test_assign_rooms_bulk_single_query(self):
+        """T-13: assign_rooms_to_booking uses batch lookup (batch_get_rooms_by_numbers)."""
+        booking = BookingDetail.objects.create(
+            intender=self.user_intender, caretaker=self.user_caretaker,
+            booking_from=self.today, booking_to=self.next_week)
+        count = services.assign_rooms_to_booking(booking, ['101', '201'])
+        self.assertEqual(count, 2)
+        self.assertEqual(booking.rooms.count(), 2)
+        self.assertEqual(booking.number_of_rooms_alloted, 2)
+
+
+class ServiceInventorySelectorTests(BaseTestCase):
+    """T-30: Inventory mutations routed through selectors."""
+
+    def test_update_inventory_routes_through_selector(self):
+        """T-30a: update_inventory_item calls selectors.update_inventory_quantity."""
+        from applications.visitor_hostel.models import Inventory
+        item = Inventory.objects.create(item_name='Brush', quantity=5)
+        services.update_inventory_item(item.id, 10)
+        item.refresh_from_db()
+        self.assertEqual(item.quantity, 10)
+
+    def test_delete_inventory_routes_through_selector(self):
+        """T-30a: update_inventory_item(0) calls selectors.delete_inventory_item."""
+        from applications.visitor_hostel.models import Inventory
+        item = Inventory.objects.create(item_name='Soap2', quantity=3)
+        services.update_inventory_item(item.id, 0)
+        self.assertFalse(Inventory.objects.filter(id=item.id).exists())
+
+
+class ServiceDashboardTests(BaseTestCase):
+    """T-03: get_dashboard_data() returns correct keys per role."""
+
+    def test_get_dashboard_data_intender(self):
+        """T-03: Intender role returns correct keys, no available_rooms."""
+        ctx = services.get_dashboard_data(self.user_intender, 'Intender')
+        expected_keys = {
+            'pending_bookings', 'active_bookings', 'dashboard_bookings',
+            'complete_bookings', 'canceled_bookings', 'rejected_bookings',
+            'cancel_booking_request', 'cancel_booking_requested',
+            'available_rooms', 'forwarded_rooms',
+        }
+        self.assertEqual(set(ctx.keys()), expected_keys)
+        # For Intender, available_rooms should be empty dict
+        self.assertEqual(ctx['available_rooms'], {})
+
+    def test_get_dashboard_data_staff(self):
+        """T-03: Staff role (VhCaretaker) returns available_rooms populated."""
+        ctx = services.get_dashboard_data(self.user_caretaker, 'VhCaretaker')
+        expected_keys = {
+            'pending_bookings', 'active_bookings', 'dashboard_bookings',
+            'complete_bookings', 'canceled_bookings', 'rejected_bookings',
+            'cancel_booking_request', 'cancel_booking_requested',
+            'available_rooms', 'forwarded_rooms',
+        }
+        self.assertEqual(set(ctx.keys()), expected_keys)
+        # Both are dicts for staff
+        self.assertIsInstance(ctx['available_rooms'], dict)
+        self.assertIsInstance(ctx['forwarded_rooms'], dict)

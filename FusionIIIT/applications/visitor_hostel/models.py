@@ -3,6 +3,7 @@
 # V-40: Choice tuples preserved (TextChoices migration deferred to avoid schema changes)
 
 from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
@@ -135,8 +136,14 @@ class BookingDetail(models.Model):
     booking_date = models.DateField(auto_now_add=False, auto_now=False, default=timezone.now)
     bill_to_be_settled_by = models.CharField(max_length=15, choices=BILL_TO_BE_SETTLED_BY, default="Intender")
 
+    def clean(self):
+        """T-10b: Enforce person_count >= 1 at model level."""
+        from django.core.exceptions import ValidationError
+        if self.person_count is not None and self.person_count < 1:
+            raise ValidationError({'person_count': 'person_count must be at least 1'})
+
     def __str__(self):
-        return '%s ----> %s - %s id is %s and category is %s' % (self.id, self.visitor, self.status, self.id, self.visitor_category)
+        return '%s ---> %s - %s id is %s and category is %s' % (self.id, self.visitor, self.status, self.id, self.visitor_category)
 
 
 class MealRecord(models.Model):
@@ -160,8 +167,18 @@ class Bill(models.Model):
     payment_status = models.BooleanField(default=False)
     bill_date = models.DateField(default=timezone.now, blank=True)
 
+    def to_summary_dict(self):
+        """T-22a: Return a summary dict. Eliminates feature envy in calculate_current_balance."""
+        return {
+            'intender': str(self.booking.intender),
+            'booking_from': str(self.booking.booking_from),
+            'booking_to': str(self.booking.booking_to),
+            'total_bill': str(self.meal_bill + self.room_bill),
+            'bill_date': str(self.bill_date),
+        }
+
     def __str__(self):
-        return '%s ----> %s - %s id is %s' % (self.booking.id, self.meal_bill, self.room_bill, self.payment_status)
+        return '%s ---> %s - %s id is %s' % (self.booking.id, self.meal_bill, self.room_bill, self.payment_status)
 
 
 class Inventory(models.Model):

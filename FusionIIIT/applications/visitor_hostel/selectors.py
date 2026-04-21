@@ -1,8 +1,10 @@
 # selectors.py
 # All database queries for the visitor_hostel module.
 # Fixes: V-03, V-33–V-37, R-01, R-03, R-05, R-07, R-10
+# Refactoring: T-01, T-04, T-05, T-08, T-13b, T-14, T-18, T-23, T-29, T-30a
 
 import datetime
+from itertools import chain
 
 from django.contrib.auth.models import User
 from django.db.models import Q
@@ -16,21 +18,52 @@ from .models import (
 
 
 # ---------------------------------------------------------------------------
-# Booking select_related base  (R-07)
+# Module-level query constants  (T-04)
 # ---------------------------------------------------------------------------
 
 BOOKING_SELECT_RELATED = ('intender', 'caretaker')
 
+# T-04: Centralised Pending+Forward filter — replaces 4 duplicated Q expressions.
+_PENDING_FORWARD_Q = Q(status="Pending") | Q(status="Forward")
+
+
+# ---------------------------------------------------------------------------
+# Base queryset helper  (T-05)
+# ---------------------------------------------------------------------------
+
+def _base_booking_qs():
+    """T-05: Single source for the standard booking queryset with select_related."""
+    return BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
+
+
+# ---------------------------------------------------------------------------
+# Overlap predicate helper  (T-18)
+# ---------------------------------------------------------------------------
+
+def _overlap_q(d1, d2, status):
+    """T-18: Named predicate for a date-range overlap with a given status.
+    Replaces the inline triple-Q-OR inside get_overlapping_bookings.
+    """
+    return (
+        Q(booking_from__lte=d1, booking_to__gte=d1, status=status) |
+        Q(booking_from__gte=d1, booking_to__lte=d2, status=status) |
+        Q(booking_from__lte=d2, booking_to__gte=d2, status=status)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Booking single-item fetch
+# ---------------------------------------------------------------------------
 
 def get_booking_by_id(booking_id):
     """R-07: Single source for booking-by-id fetch."""
-    return BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED).get(id=booking_id)
+    return _base_booking_qs().get(id=booking_id)
 
 
 def get_booking_by_id_prefetched(booking_id):
     """Return booking with rooms and visitors prefetched."""
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
+        _base_booking_qs()
         .prefetch_related('rooms', 'visitor')
         .get(id=booking_id)
     )
@@ -43,9 +76,9 @@ def get_booking_by_id_prefetched(booking_id):
 def get_pending_bookings_for_intender(user):
     """Pending + Forward bookings for an intender."""
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
+        _base_booking_qs()
         .filter(
-            Q(status="Pending") | Q(status="Forward"),
+            _PENDING_FORWARD_Q,  # T-04
             booking_to__gte=datetime.datetime.today(),
             intender=user,
         )
@@ -56,8 +89,8 @@ def get_pending_bookings_for_intender(user):
 def get_active_bookings_for_intender(user):
     """CheckedIn bookings for an intender."""
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
-        .prefetch_related('rooms', 'visitor')  # V-34: prefetch
+        _base_booking_qs()
+        .prefetch_related('rooms', 'visitor')  # T-14: ensure rooms prefetched
         .filter(status="CheckedIn", booking_to__gte=datetime.datetime.today(), intender=user)
         .order_by('booking_from')
     )
@@ -66,7 +99,7 @@ def get_active_bookings_for_intender(user):
 def get_dashboard_bookings_for_intender(user):
     """Dashboard bookings for an intender."""
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
+        _base_booking_qs()
         .prefetch_related('visitor')
         .filter(
             Q(status="Pending") | Q(status="Forward") | Q(status="Confirmed") | Q(status='Rejected'),
@@ -79,7 +112,7 @@ def get_dashboard_bookings_for_intender(user):
 
 def get_complete_bookings_for_intender(user):
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
+        _base_booking_qs()
         .filter(check_out__lt=datetime.datetime.today(), intender=user)
         .order_by('-booking_from')
     )
@@ -87,7 +120,7 @@ def get_complete_bookings_for_intender(user):
 
 def get_canceled_bookings_for_intender(user):
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
+        _base_booking_qs()
         .filter(status="Canceled", intender=user)
         .order_by('booking_from')
     )
@@ -95,7 +128,7 @@ def get_canceled_bookings_for_intender(user):
 
 def get_rejected_bookings_for_intender(user):
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
+        _base_booking_qs()
         .filter(status='Rejected', intender=user)
         .order_by('booking_from')
     )
@@ -103,7 +136,7 @@ def get_rejected_bookings_for_intender(user):
 
 def get_cancel_requested_bookings_for_intender(user):
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
+        _base_booking_qs()
         .filter(status='CancelRequested', intender=user)
         .order_by('booking_from')
     )
@@ -114,9 +147,9 @@ def get_cancel_requested_bookings_for_intender(user):
 def get_pending_bookings_all():
     """Pending + Forward bookings for staff."""
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
+        _base_booking_qs()
         .filter(
-            Q(status="Pending") | Q(status="Forward"),
+            _PENDING_FORWARD_Q,  # T-04
             booking_to__gte=datetime.datetime.today(),
         )
         .order_by('booking_from')
@@ -126,8 +159,8 @@ def get_pending_bookings_all():
 def get_active_bookings_all():
     """Confirmed + CheckedIn bookings for staff."""
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
-        .prefetch_related('rooms', 'visitor')  # V-34
+        _base_booking_qs()
+        .prefetch_related('rooms', 'visitor')
         .filter(
             Q(status="Confirmed") | Q(status="CheckedIn"),
             booking_to__gte=datetime.datetime.today(),
@@ -138,7 +171,7 @@ def get_active_bookings_all():
 
 def get_cancel_requests_all():
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
+        _base_booking_qs()
         .filter(status="CancelRequested", booking_to__gte=datetime.datetime.today())
         .order_by('booking_from')
     )
@@ -146,7 +179,7 @@ def get_cancel_requests_all():
 
 def get_dashboard_bookings_all():
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
+        _base_booking_qs()
         .prefetch_related('visitor')
         .filter(
             Q(status="Pending") | Q(status="Forward") | Q(status="Confirmed"),
@@ -158,7 +191,7 @@ def get_dashboard_bookings_all():
 
 def get_forwarded_bookings():
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
+        _base_booking_qs()
         .filter(Q(status="Forward"), booking_to__gte=datetime.datetime.today())
         .order_by('booking_from')
     )
@@ -166,7 +199,7 @@ def get_forwarded_bookings():
 
 def get_complete_bookings_all():
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
+        _base_booking_qs()
         .filter(
             Q(status="Canceled") | Q(status="Complete"),
             check_out__lt=datetime.datetime.today(),
@@ -177,7 +210,7 @@ def get_complete_bookings_all():
 
 def get_canceled_bookings_all():
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
+        _base_booking_qs()
         .filter(status="Canceled")
         .order_by('booking_from')
     )
@@ -185,7 +218,7 @@ def get_canceled_bookings_all():
 
 def get_cancel_requested_for_intender(user):
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
+        _base_booking_qs()
         .filter(
             status='CancelRequested',
             booking_to__gte=datetime.datetime.today(),
@@ -197,28 +230,29 @@ def get_cancel_requested_for_intender(user):
 
 def get_rejected_bookings_all():
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
+        _base_booking_qs()
         .filter(status='Rejected')
         .order_by('booking_from')
     )
 
 
 def get_all_bookings():
-    return BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED).all().order_by('booking_from')
+    return _base_booking_qs().all().order_by('booking_from')
 
 
 def get_booking_requests_pending():
-    return BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED).filter(status="Pending")
+    return _base_booking_qs().filter(status="Pending")
 
 
 def get_active_bookings_confirmed():
-    return BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED).filter(status="Confirmed")
+    return _base_booking_qs().filter(status="Confirmed")
 
 
 def get_inactive_bookings():
+    # T-08: Fixed typo 'Cancelled' → 'Canceled' (was returning 0 rows)
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
-        .filter(Q(status="Cancelled") | Q(status="Rejected") | Q(status="Complete"))
+        _base_booking_qs()
+        .filter(Q(status="Canceled") | Q(status="Rejected") | Q(status="Complete"))
     )
 
 
@@ -229,47 +263,52 @@ def get_inactive_bookings():
 def get_overlapping_bookings(date1, date2, statuses):
     """
     R-03: Unified query for bookings overlapping a date range with given statuses.
-    Replaces booking_details() and forwarded_booking_details().
+    T-18: Uses _overlap_q() helper — replaces inline triple-Q per status.
     """
     q_filters = Q()
     for status in statuses:
-        q_filters |= (
-            Q(booking_from__lte=date1, booking_to__gte=date1, status=status) |
-            Q(booking_from__gte=date1, booking_to__lte=date2, status=status) |
-            Q(booking_from__lte=date2, booking_to__gte=date2, status=status)
-        )
+        q_filters |= _overlap_q(date1, date2, status)  # T-18
     return (
-        BookingDetail.objects.select_related(*BOOKING_SELECT_RELATED)
+        _base_booking_qs()
         .prefetch_related('rooms')
         .filter(q_filters)
     )
 
 
 def get_available_rooms(date1, date2):
-    """V-37: Use .exclude() instead of O(n²) list iteration."""
+    """T-29: Use chain.from_iterable instead of nested loop — more Pythonic."""
     statuses = ["Confirmed", "Forward", "CheckedIn"]
     overlapping = get_overlapping_bookings(date1, date2, statuses)
-    booked_room_ids = []
-    for booking in overlapping:
-        for room in booking.rooms.all():
-            booked_room_ids.append(room.id)
+    booked_room_ids = list(
+        chain.from_iterable(
+            b.rooms.values_list('id', flat=True) for b in overlapping
+        )
+    )
     return RoomDetail.objects.exclude(id__in=booked_room_ids)
 
 
 def get_forwarded_booking_rooms(date1, date2):
-    """Rooms allocated to forwarded bookings in the date range."""
-    statuses_confirmed = ["Confirmed", "CheckedIn"]
+    """T-29: Use chain.from_iterable and values_list for room id collection."""
     statuses_forward = ["Forward"]
     forwarded_bookings = get_overlapping_bookings(date1, date2, statuses_forward)
-    rooms = []
-    for booking in forwarded_bookings:
-        for room in booking.rooms.all():
-            rooms.append(room)
-    return rooms
+    room_ids = list(
+        chain.from_iterable(
+            b.rooms.values_list('id', flat=True) for b in forwarded_bookings
+        )
+    )
+    return list(RoomDetail.objects.filter(id__in=room_ids))
 
 
 def get_room_by_number(room_number):
     return RoomDetail.objects.get(room_number=room_number)
+
+
+def batch_get_rooms_by_numbers(room_numbers):
+    """T-13b: Batch room lookup — one DB hit for all rooms, not one per room."""
+    return {
+        room.room_number: room
+        for room in RoomDetail.objects.filter(room_number__in=room_numbers)
+    }
 
 
 def get_all_rooms():
@@ -303,12 +342,12 @@ def get_meal_record_for_visitor_date(visitor, booking, meal_date):
         return MealRecord.objects.select_related(
             'booking__intender', 'booking__caretaker', 'visitor'
         ).get(visitor=visitor, booking=booking, meal_date=meal_date)
-    except MealRecord.DoesNotExist:  # V-28: specific exception
+    except MealRecord.DoesNotExist:
         return None
 
 
 # ---------------------------------------------------------------------------
-# Inventory selectors
+# Inventory selectors  (T-30a: add mutation selectors)
 # ---------------------------------------------------------------------------
 
 def get_all_inventory():
@@ -323,6 +362,16 @@ def get_inventory_by_id(item_id):
     return Inventory.objects.get(pk=item_id)
 
 
+def update_inventory_quantity(item_id, quantity):
+    """T-30a: Route inventory update through selector layer."""
+    Inventory.objects.filter(id=item_id).update(quantity=quantity)
+
+
+def delete_inventory_item(item_id):
+    """T-30a: Route inventory deletion through selector layer."""
+    Inventory.objects.filter(id=item_id).delete()
+
+
 # ---------------------------------------------------------------------------
 # Visitor selectors
 # ---------------------------------------------------------------------------
@@ -335,9 +384,31 @@ def get_visitor_by_id(visitor_id):
     return VisitorDetail.objects.get(id=visitor_id)
 
 
+def get_first_visitor_per_booking(bookings):
+    """T-23: Returns list of first visitor for each booking that has visitors.
+    Extracted from services.get_visitor_list_from_dashboard.
+    """
+    visitor_list = []
+    for booking in bookings:
+        first = booking.visitor.first()
+        if first is not None:
+            visitor_list.append(first)
+    return visitor_list
+
+
 # ---------------------------------------------------------------------------
 # User / Designation selectors  (R-05, R-10)
 # ---------------------------------------------------------------------------
+
+def get_all_users():
+    """T-01: Centralised User.objects.all() — replaces ORM calls in views."""
+    return User.objects.all()
+
+
+def get_user_by_id(pk):
+    """T-01: Centralised User.objects.get — replaces ORM calls in views/api."""
+    return User.objects.get(id=pk)
+
 
 def get_user_role(user):
     """R-10: Determine user's VH designation."""
