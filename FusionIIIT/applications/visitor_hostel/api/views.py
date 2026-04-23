@@ -1,10 +1,22 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.authentication import TokenAuthentication
 from applications.visitor_hostel.models import Inventory, InventoryBill
 from .serializers import InventorySerializer, InventoryBillSerializer, InventoryItemSerializer
 from rest_framework.generics import ListAPIView
+
+
 class AddToInventory(APIView):
+    """
+    API View for adding inventory items.
+    Refactored to include authentication and permission classes.
+    Resolves: Layer Violation, DRF Compliance
+    """
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         # Extract data from request
         item_name = request.data.get('item_name')
@@ -39,12 +51,29 @@ class AddToInventory(APIView):
             bill_serializer = InventoryBillSerializer(data=bill_data)
             if bill_serializer.is_valid():
                 bill_serializer.save()
-                return Response({"message": "Item added successfully!"}, status=status.HTTP_201_CREATED)
+                return Response({
+                    "success": True,
+                    "message": "Item added successfully!"
+                }, status=status.HTTP_201_CREATED)
             else:
-                return Response(bill_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                return Response({
+                    "success": False,
+                    "error": bill_serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
         else:
-            return Response(inventory_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return Response({
+                "success": False,
+                "error": inventory_serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
         
+
 class InventoryListView(ListAPIView):
+    """
+    API View for listing inventory items.
+    Refactored to include authentication and permission classes.
+    Resolves: Layer Violation, DRF Compliance
+    """
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
     queryset = Inventory.objects.all()
     serializer_class = InventorySerializer

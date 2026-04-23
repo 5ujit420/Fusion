@@ -25,15 +25,6 @@ from applications.visitor_hostel.models import *
 from applications.complaint_system.models import Caretaker
 # from notification.views import visitor_hostel_caretaker_notif
 import numpy as np
-from django.contrib.auth.models import User
-from django.http import JsonResponse
-from .models import BookingDetail  # Make sure to import your BookingDetail model
-from django.utils import timezone
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.authentication import TokenAuthentication
-from rest_framework.decorators import api_view, permission_classes,authentication_classes
-from django.http import JsonResponse
-from .models import BookingDetail  # Make sure to import your BookingDetail model
 from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.authentication import TokenAuthentication
@@ -315,14 +306,15 @@ def visitorhostel(request):
 #### NEW
 
 from django.utils import timezone
+from .selectors import update_expired_bookings as selector_update_expired_bookings
 
 def update_expired_bookings():
-    current_date = timezone.now().date()
-    expired_bookings = BookingDetail.objects.filter(
-        status='Pending',
-        booking_to__lt=current_date
-    )
-    expired_bookings.update(status='Expired')
+    """
+    Wrapper function that delegates to selector.
+    Maintains backward compatibility while using refactored code.
+    Resolves: Duplicated Code, Query Logic Duplication
+    """
+    return selector_update_expired_bookings()
     
 @login_required
 @require_GET

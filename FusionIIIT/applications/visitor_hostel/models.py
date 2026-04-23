@@ -1,53 +1,69 @@
 from django.contrib.auth.models import User
 from django.db import models
 from django.utils import timezone
+from django.core.exceptions import ValidationError
 
 from applications.globals.models import ExtraInfo
 
-VISITOR_CATEGORY = (
-    ('A', 'A'),
-    ('B', 'B'),
-    ('C', 'C'),
-    ('D', 'D'),
-    )
 
-ROOM_TYPE = (
-    ('SingleBed', 'SingleBed'),
-    ('DoubleBed', 'DoubleBed'),
-    ('VIP', 'VIP')
-    )
+class VisitorCategory(models.TextChoices):
+    """Enum for visitor categories. Resolves: Primitive Obsession, Magic Strings"""
+    A = 'A', 'A'
+    B = 'B', 'B'
+    C = 'C', 'C'
+    D = 'D', 'D'
 
-ROOM_FLOOR = (
-    ('GroundFloor', 'GroundFloor'),
-    ('FirstFloor', 'FirstFloor'),
-    ('SecondFloor', 'SecondFloor'),
-    ('ThirdFloor', 'ThirdFloor'),
-    )
 
-ROOM_STATUS = (
-    ('Booked', 'Booked'),
-    ('CheckedIn', 'CheckedIn'),
-    ('Available', 'Available'),
-    ('UnderMaintenance', 'UnderMaintenance'),
-    )
+class RoomType(models.TextChoices):
+    """Enum for room types. Resolves: Primitive Obsession, Magic Strings"""
+    SINGLE_BED = 'SingleBed', 'SingleBed'
+    DOUBLE_BED = 'DoubleBed', 'DoubleBed'
+    VIP = 'VIP', 'VIP'
 
-BOOKING_STATUS = (
-    ("Confirmed" , 'Confirmed'),
-    ("Pending" , 'Pending'),
-    ("Rejected" , 'Rejected'),
-    ("Canceled" , 'Canceled'),
-    ("CancelRequested" , 'CancelRequested'),
-    ("CheckedIn" , 'CheckedIn'),
-    ("Complete", 'Complete'),
-    ("Forward", 'Forward')
-    )
 
-BILL_TO_BE_SETTLED_BY = (
-    ("Intender", "Intender"),
-    ("Visitor", "Visitor"),
-    ("ProjectNo", "ProjectNo"),
-    ("Institute", "Institute")
-    )
+class RoomFloor(models.TextChoices):
+    """Enum for room floors. Resolves: Primitive Obsession, Magic Strings"""
+    GROUND = 'GroundFloor', 'GroundFloor'
+    FIRST = 'FirstFloor', 'FirstFloor'
+    SECOND = 'SecondFloor', 'SecondFloor'
+    THIRD = 'ThirdFloor', 'ThirdFloor'
+
+
+class RoomStatus(models.TextChoices):
+    """Enum for room status. Resolves: Primitive Obsession, Magic Strings"""
+    BOOKED = 'Booked', 'Booked'
+    CHECKED_IN = 'CheckedIn', 'CheckedIn'
+    AVAILABLE = 'Available', 'Available'
+    UNDER_MAINTENANCE = 'UnderMaintenance', 'UnderMaintenance'
+
+
+class BookingStatus(models.TextChoices):
+    """Enum for booking status. Resolves: Primitive Obsession, Magic Strings"""
+    CONFIRMED = "Confirmed", 'Confirmed'
+    PENDING = "Pending", 'Pending'
+    REJECTED = "Rejected", 'Rejected'
+    CANCELED = "Canceled", 'Canceled'
+    CANCEL_REQUESTED = "CancelRequested", 'CancelRequested'
+    CHECKED_IN = "CheckedIn", 'CheckedIn'
+    COMPLETE = "Complete", 'Complete'
+    FORWARD = "Forward", 'Forward'
+
+
+class BillSettlementBy(models.TextChoices):
+    """Enum for bill settlement. Resolves: Primitive Obsession, Magic Strings"""
+    INTENDER = "Intender", "Intender"
+    VISITOR = "Visitor", "Visitor"
+    PROJECT_NO = "ProjectNo", "ProjectNo"
+    INSTITUTE = "Institute", "Institute"
+
+
+# Legacy constants for backward compatibility (to be removed in future refactor)
+VISITOR_CATEGORY = tuple((c.value, c.label) for c in VisitorCategory)
+ROOM_TYPE = tuple((c.value, c.label) for c in RoomType)
+ROOM_FLOOR = tuple((c.value, c.label) for c in RoomFloor)
+ROOM_STATUS = tuple((c.value, c.label) for c in RoomStatus)
+BOOKING_STATUS = tuple((c.value, c.label) for c in BookingStatus)
+BILL_TO_BE_SETTLED_BY = tuple((c.value, c.label) for c in BillSettlementBy)
 
 
 class VisitorDetail(models.Model):
@@ -102,6 +118,52 @@ class BookingDetail(models.Model):
 
     def __str__(self):
         return '%s ----> %s - %s id is %s and category is %s' % (self.id, self.visitor, self.status, self.id, self.visitor_category)
+
+    def get_room_numbers(self):
+        """
+        Facade method to encapsulate room access. 
+        Resolves: Message Chains, Deep Dot-Access Chains
+        """
+        return list(self.rooms.values_list('room_number', flat=True))
+
+    def get_visitor_emails(self):
+        """
+        Facade method to encapsulate visitor access.
+        Resolves: Message Chains, Deep Dot-Access Chains
+        """
+        return list(self.visitor.values_list('visitor_email', flat=True))
+
+    def assign_rooms(self, room_ids):
+        """
+        Encapsulated room assignment.
+        Resolves: Inappropriate Intimacy, Direct Internal Access
+        """
+        self.rooms.set(room_ids)
+
+    def release_rooms(self):
+        """
+        Encapsulated room release.
+        Resolves: Inappropriate Intimacy, Direct Internal Access
+        """
+        self.rooms.clear()
+
+    def calculate_total_bill(self):
+        """
+        Calculate total bill (room + meal).
+        Resolves: Overloaded Serializer, Feature Envy
+        Note: Simplified calculation - actual rates should come from settings
+        """
+        from .services import calculate_room_bill, calculate_mess_bill
+        
+        # Room bill calculation (simplified)
+        days = (self.booking_to - self.booking_from).days if self.booking_to and self.booking_from else 1
+        room_bill = calculate_room_bill(self, self.visitor_category, days)
+        
+        # Meal bill calculation
+        visitors = self.visitor.all()
+        meal_bill = calculate_mess_bill(visitors)
+        
+        return room_bill + meal_bill
 
 
 class MealRecord(models.Model):
