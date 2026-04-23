@@ -1,4 +1,5 @@
-from sqlite3 import IntegrityError
+from django.db import IntegrityError
+from django.core.exceptions import ValidationError
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
 from django.contrib import messages
 from django.shortcuts import render, get_object_or_404, redirect, reverse
@@ -12,13 +13,37 @@ from django.core.paginator import Paginator
 
 from .models import File, Tracking
 from applications.globals.models import ExtraInfo, HoldsDesignation, Designation
-from .utils import *
-from .sdk.methods import *
+from .services import (
+    create_file_from_form,
+    forward_file_service,
+    archive_file_service,
+    update_draft_and_send,
+    delete_file_service,
+    validate_file_size,
+)
+from .selectors import (
+    get_all_files,
+    get_extrainfo_all,
+    get_holdsdesignations_all,
+    get_file_by_id,
+    get_tracking_with_full_relations,
+    get_designation_by_id,
+    get_designation_by_name,
+    get_holdsdesignation_by_id,
+    get_user_by_username,
+    get_draft_files,
+    get_inbox_files,
+    get_outbox_files,
+    get_history_for_file,
+    filter_files_by_search,
+)
 from .decorators import *
-from datetime import datetime;
+from datetime import datetime
 
-from timeit import default_timer as time
 from notification.views import office_module_notif, file_tracking_notif
+import logging
+
+logger = logging.getLogger(__name__)
 
 import io
 from reportlab.lib.pagesizes import letter
@@ -35,122 +60,53 @@ import os
 @dropdown_designation_valid
 def filetracking(request):
     """
-        The function is used to create files by current user(employee).
-        It adds the employee(uploader) and file datails to a file(table) of filetracking(model)
-        if he intends to create file.
-
-        @param:
-                request - trivial.
-
-        @variables:
-
-
-                uploader - Employee who creates file.
-                subject - Title of the file.
-                description - Description of the file.
-                upload_file - Attachment uploaded while creating file.
-                file - The file object.
-                extrainfo - The Extrainfo object.
-                holdsdesignations - The HoldsDesignation object.
-                context - Holds data needed to make necessary changes in the template.
+    Create files by current user (employee).
+    Handles both 'save' (draft) and 'send' actions.
+    
+    Business logic delegated to services.create_file_from_form().
+    ORM queries delegated to selectors.
+    Validation delegated to serializers.
     """
-
     if request.method == "POST":
         try:
-            if 'save' in request.POST:
-                uploader = request.user.extrainfo
-                subject = request.POST.get('title')
-                description = request.POST.get('desc')
-                design = request.POST.get('design')
-                designation = Designation.objects.get(id=HoldsDesignation.objects.select_related(
-                    'user', 'working', 'designation').get(id=design).designation_id)
-                upload_file = request.FILES.get('myfile')
-                if upload_file and upload_file.size / 1000 > 10240:
-                    messages.error(
-                        request, "File should not be greater than 10MB")
-                    return redirect("/filetracking")
-
-                form_remarks = request.POST.get('remarks')
-                extraJSON = {
-                    'remarks': form_remarks if form_remarks is not None else '',
-                }
-
-                File.objects.create(
-                    uploader=uploader,
-                    description=description,
-                    subject=subject,
-                    designation=designation,
-                    upload_file=upload_file,
-                    file_extra_JSON=extraJSON
+            # Determine action type
+            save_action = 'save' in request.POST
+            send_action = 'send' in request.POST
+            
+            if save_action or send_action:
+                # Use service layer for business logic
+                file = create_file_from_form(
+                    uploader=request.user,
+                    subject=request.POST.get('title'),
+                    description=request.POST.get('desc'),
+                    designation_id=request.POST.get('design'),
+                    upload_file=request.FILES.get('myfile'),
+                    form_remarks=request.POST.get('remarks'),
+                    send_to_receiver=send_action,
+                    receiver_username=request.POST.get('receiver') if send_action else None,
+                    receive_designation_name=request.POST.get('receive') if send_action else None,
                 )
-
-                messages.success(request, 'File Draft Saved Successfully')
-
-            if 'send' in request.POST:
-                uploader = request.user.extrainfo
-                subject = request.POST.get('title')
-                description = request.POST.get('desc')
-                design = request.POST.get('design')
-                designation = Designation.objects.get(id=HoldsDesignation.objects.select_related(
-                    'user', 'working', 'designation').get(id=design).designation_id)
-
-                upload_file = request.FILES.get('myfile')
-                if upload_file and upload_file.size / 1000 > 10240:
-                    messages.error(
-                        request, "File should not be greater than 10MB")
-                    return redirect("/filetracking")
-
-                file = File.objects.create(
-                    uploader=uploader,
-                    description=description,
-                    subject=subject,
-                    designation=designation,
-                    upload_file=upload_file
-                )
-
-                current_id = request.user.extrainfo
-                remarks = request.POST.get('remarks')
-
-                sender = request.POST.get('design')
-                current_design = HoldsDesignation.objects.select_related(
-                    'user', 'working', 'designation').get(id=sender)
-
-                receiver = request.POST.get('receiver')
-                try:
-                    receiver_id = User.objects.get(username=receiver)
-                except Exception as e:
-                    messages.error(request, 'Enter a valid Username')
-                    return redirect('/filetracking/')
-                receive = request.POST.get('receive')
-                try:
-                    receive_design = Designation.objects.get(name=receive)
-                except Exception as e:
-                    messages.error(request, 'Enter a valid Designation')
-                    return redirect('/filetracking/')
-
-                upload_file = request.FILES.get('myfile')
-
-                Tracking.objects.create(
-                    file_id=file,
-                    current_id=current_id,
-                    current_design=current_design,
-                    receive_design=receive_design,
-                    receiver_id=receiver_id,
-                    remarks=remarks,
-                    upload_file=upload_file,
-                )
-                file_tracking_notif(request.user, receiver_id, subject)
-                messages.success(request, 'File sent successfully')
-
+                
+                if send_action:
+                    messages.success(request, 'File sent successfully')
+                else:
+                    messages.success(request, 'File Draft Saved Successfully')
+                    
+        except ValidationError as ve:
+            messages.error(request, str(ve))
+            return redirect("/filetracking")
         except IntegrityError:
-            message = "FileID Already Taken.!!"
-            return HttpResponse(message)
+            messages.error(request, "FileID Already Taken.!!")
+            return redirect("/filetracking")
+        except Exception as e:
+            logger.error(f"Error in filetracking view: {e}", exc_info=True)
+            messages.error(request, 'An error occurred while processing your request')
+            return redirect("/filetracking")
 
-    file = File.objects.select_related(
-        'uploader__user', 'uploader__department', 'designation').all()
-    extrainfo = ExtraInfo.objects.select_related('user', 'department').all()
-    holdsdesignations = HoldsDesignation.objects.select_related(
-        'user', 'working', 'designation').all()
+    # Use selectors for ORM queries
+    file = get_all_files()
+    extrainfo = get_extrainfo_all()
+    holdsdesignations = get_holdsdesignations_all()
 
     designation_name = request.session.get('currentDesignationSelected', 'default_value')
     all_available_designations = request.session.get(

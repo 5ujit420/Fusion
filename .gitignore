@@ -1,78 +1,46 @@
-# Byte-compiled / optimized / DLL files
+```
+# Python
 __pycache__/
-*.py[cod]
-*$py.class
-
-# IDEs #
-.vscode
-.idea
-
-# Distribution / packaging
+*.pyc
+*.pyo
+*.pyd
 .Python
 env/
-build/
-media
-develop-eggs/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Swap files
-*.swp
-
-# Installer logs
+venv/
+.venv/
 pip-log.txt
 pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
 .tox/
 .coverage
 .coverage.*
 .cache
 nosetests.xml
 coverage.xml
-*,cover
-.hypothesis/
+*.cover
+*.log
+*.pot
+*.po
+*~
+.pytest_cache/
+.mypy_cache/
 
-# Flask stuff:
-instance/.webassets-cache
-
-# PyBuilder
-target/
-
-# pyenv
-.python-version
-
-# celery beat schedule file
-celerybeat-schedule
-
-# dotenv
+# Django
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+media/
+staticfiles/
 .env
 
-# virtualenv: ignore environment folder ending with env. e.g. env, venv, myenv, fusionenv, etc
-*env/
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
 
-# Rope project settings
-.ropeproject
-
-# VSCode Settings
-#.vscode/settings.json
-
-# Node Modules
-node_modules/
-
-FusionIIIT/static/
-package-lock.json
-
-
+# OS
 .DS_Store
-**/generated.pdf
+Thumbs.db
+```
