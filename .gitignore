@@ -1,78 +1,60 @@
-# Byte-compiled / optimized / DLL files
+```
+# Python
 __pycache__/
-*.py[cod]
-*$py.class
-
-# IDEs #
-.vscode
-.idea
-
-# Distribution / packaging
+*.pyc
+*.pyo
+*.pyd
 .Python
 env/
-build/
-media
-develop-eggs/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Swap files
-*.swp
-
-# Installer logs
+venv/
+.venv/
 pip-log.txt
 pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
 .tox/
 .coverage
 .coverage.*
 .cache
 nosetests.xml
 coverage.xml
-*,cover
-.hypothesis/
-
-# Flask stuff:
-instance/.webassets-cache
-
-# PyBuilder
-target/
-
-# pyenv
-.python-version
-
-# celery beat schedule file
-celerybeat-schedule
-
-# dotenv
-.env
-
-# virtualenv: ignore environment folder ending with env. e.g. env, venv, myenv, fusionenv, etc
-*env/
-
-# Rope project settings
-.ropeproject
-
-# VSCode Settings
-#.vscode/settings.json
-
-# Node Modules
-node_modules/
-
-FusionIIIT/static/
-package-lock.json
-
-
+*.cover
+*.log
 .DS_Store
-**/generated.pdf
+Thumbs.db
+
+# Django
+*.pot
+*.po
+MANIFEST
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Build and distribution artifacts
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Testing
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+coverage/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+```

@@ -36,6 +36,31 @@ from django.core.exceptions import ObjectDoesNotExist
 from collections import defaultdict
 from django.db.models import Case, When, IntegerField
 
+# Import service layer for business logic
+from applications.examination.services import (
+    calculate_spi_for_student,
+    calculate_cpi_for_student,
+    parse_academic_year,
+    is_valid_grade,
+    gather_related_registrations,
+    format_semester_display,
+    get_student_attempt_info,
+    GRADE_CONVERSION,
+)
+
+# Import selectors for database queries
+from applications.examination.selectors import (
+    get_student_by_id,
+    get_student_grades_for_semester,
+    get_course_registrations_for_student,
+    get_students_for_batch,
+    get_courses_for_batch_and_semester,
+    get_course_instructors,
+    get_user_by_username,
+    get_course_by_code,
+    get_semester_by_no,
+)
+
 grade_conversion = {
     "O": 1.0, "A+": 1.0, "A": 0.9, "B+": 0.8, "B": 0.7,
     "C+": 0.6, "C": 0.5, "D+": 0.4, "D": 0.3, "F": 0.2, "S": 0.0,
