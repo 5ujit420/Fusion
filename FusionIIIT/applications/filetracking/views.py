@@ -1,9 +1,15 @@
-# views.py
-# Thin web views for the filetracking module.
-# All business logic delegated to services.py, all queries to selectors.py.
-# Fixes: V-04–V-11, V-22–V-24, V-29–V-31, V-35, V-36, V-40, R-01–R-04
+# views.py — thin web views for the filetracking module.
+# T-02/S-01,S-02: outbox_view and inbox_view slimmed; enrichment delegated to services.
+# T-03/S-06,S-07: deep nesting flattened in forward and filetracking views.
+# T-04/S-09: merged duplicate except blocks in forward.
+# T-05/S-18–S-22: all raw ORM replaced with selectors/services.
+# T-06/S-23,S-24: mark_file_read/mark_tracking_read service calls.
+# T-07/S-25: get_draft_remarks service call.
+# T-12/S-32: AjaxDropdown1→designation_autocomplete_view, AjaxDropdown→user_autocomplete_view.
+# T-14/S-35: parse_datetime import removed (date parsing moved to services).
+# T-15/S-36: DEFAULT_DESIGNATION_SESSION_VALUE named constant used everywhere.
 
-from django.db import IntegrityError  # V-29: was `from sqlite3 import IntegrityError`
+from django.db import IntegrityError
 from django.http import HttpResponse, JsonResponse
 from django.contrib import messages
 from django.shortcuts import render, get_object_or_404, redirect, reverse
@@ -11,16 +17,14 @@ from django.contrib.auth.decorators import login_required
 from django.core import serializers as django_serializers
 from django.contrib.auth.models import User
 from django.views.decorators.http import require_POST
-from django.utils.dateparse import parse_datetime
 from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
-
-from datetime import datetime
 
 from .models import File, Tracking
 from . import services
 from . import selectors
 from .decorators import user_is_student, dropdown_designation_valid
+from .utils import DESIGNATION_SESSION_KEY, DEFAULT_DESIGNATION_SESSION_VALUE
 
 
 @login_required(login_url="/accounts/login/")
@@ -29,9 +33,10 @@ from .decorators import user_is_student, dropdown_designation_valid
 def filetracking(request):
     """
     Compose file page: save as draft or send.
-    V-04, R-01 — delegates to services.save_draft_file() / services.send_file().
+    T-03/S-07: early-return on GET flattens nesting from 4→2 levels.
     """
     if request.method == "POST":
+        # T-03/S-07: flattened — save and send branches at same indent level.
         try:
             if 'save' in request.POST:
                 services.save_draft_file(
@@ -57,28 +62,21 @@ def filetracking(request):
                         remarks=request.POST.get('remarks'),
                     )
                     messages.success(request, 'File sent successfully')
-                except User.DoesNotExist:  # V-30: specific exception
-                    messages.error(request, 'Enter a valid Username')
+                except (User.DoesNotExist, ValidationError) as e:
+                    msg = e.message if hasattr(e, 'message') else str(e)
+                    messages.error(request, msg)
                     return redirect('/filetracking/')
-                except Designation.DoesNotExist:  # V-30
-                    messages.error(request, 'Enter a valid Designation')
-                    return redirect('/filetracking/')
-                except ValidationError as e:
-                    messages.error(request, str(e.message if hasattr(e, 'message') else e))
-                    return redirect('/filetracking')
 
         except IntegrityError:
-            message = "FileID Already Taken.!!"
-            return HttpResponse(message)
+            return HttpResponse("FileID Already Taken.!!")
 
-    # V-40: Only fetch user's designations, not all objects
+    # T-05/S-19: raw File.objects.select_related call replaced with selector.
     from applications.globals.models import Designation
-    designation_name = request.session.get('currentDesignationSelected', 'default_value')
+    designation_name = request.session.get(DESIGNATION_SESSION_KEY, DEFAULT_DESIGNATION_SESSION_VALUE)
     hd_obj = selectors.get_holds_designation_obj(request.user, designation_name)
 
     context = {
-        'file': File.objects.select_related(
-            'uploader__user', 'uploader__department', 'designation').all(),
+        'file': selectors.get_all_files_with_related(),
         'extrainfo': selectors.get_extrainfo_by_user(request.user),
         'holdsdesignations': selectors.get_user_designations(request.user),
         'designation_name': designation_name,
@@ -93,7 +91,7 @@ def filetracking(request):
 @user_is_student
 @dropdown_designation_valid
 def draft_design(request):
-    """Redirect to drafts page (R-04)."""
+    """Redirect to drafts page."""
     url = services.get_designation_redirect_url_from_session(request, 'drafts')
     return redirect(url)
 
@@ -102,7 +100,7 @@ def draft_design(request):
 @user_is_student
 @dropdown_designation_valid
 def drafts_view(request, id):
-    """View all drafts for a user+designation."""
+    """View all drafts for a user+designation. T-10/S-28: enrichment via service bulk-fetch."""
     user_hd = selectors.get_holds_designation_by_id(id)
     designation = services.get_designation_display_name(user_hd)
     draft_files = services.view_drafts(
@@ -110,11 +108,8 @@ def drafts_view(request, id):
         designation=user_hd.designation,
         src_module='filetracking',
     )
-
-    for f in draft_files:
-        f['upload_date'] = parse_datetime(f['upload_date'])
-        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
-
+    # T-10/S-28: single bulk-fetch replaces per-file selector calls.
+    draft_files = services.enrich_draft_files(draft_files)
     draft_files = services.add_uploader_department_to_files_list(draft_files)
 
     context = {
@@ -130,10 +125,11 @@ def drafts_view(request, id):
 @user_is_student
 @dropdown_designation_valid
 def outbox_view(request):
-    """V-05: Delegates to services.view_outbox()."""
-    dropdown_design = request.session.get('currentDesignationSelected', 'default_value')
+    """T-02/S-01: slimmed — enrich→filter→paginate→render; T-10/S-26: N+1 eliminated."""
+    dropdown_design = request.session.get(DESIGNATION_SESSION_KEY, DEFAULT_DESIGNATION_SESSION_VALUE)
     user_hd = selectors.get_holds_designation_obj(request.user, dropdown_design)
     designation = services.get_designation_display_name(user_hd)
+    sender_extrainfo = selectors.get_extrainfo_by_username(user_hd.user)
 
     outward_files = services.view_outbox(
         username=user_hd.user,
@@ -141,37 +137,20 @@ def outbox_view(request):
         src_module='filetracking',
     )
 
-    for f in outward_files:
-        last_forw = selectors.get_last_forw_tracking(
-            file_id=f['id'],
-            sender_extrainfo=selectors.get_extrainfo_by_username(user_hd.user),
-            sender_holds_designation=user_hd,
-        )
-        f['sent_to_user'] = last_forw.receiver_id if last_forw else None
-        f['sent_to_design'] = last_forw.receive_design if last_forw else None
-        f['last_sent_date'] = last_forw.forward_date if last_forw else None
-        f['upload_date'] = parse_datetime(f['upload_date'])
-        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
+    # T-10/S-26: bulk enrichment — single set of queries regardless of file count.
+    outward_files = services.enrich_outbox_files(outward_files, sender_extrainfo, user_hd)
 
-    # Search filtering
-    subject_query = request.GET.get('subject', '')
-    sent_to_query = request.GET.get('sent_to', '')
-    date_query = request.GET.get('date', '')
-
-    if subject_query:
-        outward_files = [f for f in outward_files if subject_query.lower() in f['subject'].lower()]
-    if sent_to_query:
-        outward_files = [f for f in outward_files if f['sent_to_user'] and sent_to_query.lower() in f['sent_to_user'].username.lower()]
-    if date_query:
-        try:
-            search_date = datetime.strptime(date_query, '%Y-%m-%d')
-            outward_files = [f for f in outward_files if f['last_sent_date'] and f['last_sent_date'].date() == search_date.date()]
-        except ValueError:
-            outward_files = []
+    # T-01/S-08: shared filter function replaces duplicated 13-line block.
+    outward_files = services.filter_files_by_search_params(
+        outward_files,
+        subject_q=request.GET.get('subject', ''),
+        sent_to_q=request.GET.get('sent_to', ''),
+        date_q=request.GET.get('date', ''),
+        date_field='last_sent_date',
+    )
 
     paginator = Paginator(outward_files, 10)
-    page_number = request.GET.get('page')
-    page_obj = paginator.get_page(page_number)
+    page_obj = paginator.get_page(request.GET.get('page'))
 
     context = {
         'page_obj': page_obj,
@@ -186,8 +165,8 @@ def outbox_view(request):
 @user_is_student
 @dropdown_designation_valid
 def inbox_view(request):
-    """V-06: Delegates to services.view_inbox()."""
-    dropdown_design = request.session.get('currentDesignationSelected', 'default_value')
+    """T-02/S-02: slimmed — enrich→filter→paginate→render; T-10/S-27: N+1 eliminated."""
+    dropdown_design = request.session.get(DESIGNATION_SESSION_KEY, DEFAULT_DESIGNATION_SESSION_VALUE)
     user_hd = selectors.get_holds_designation_obj(request.user, dropdown_design)
     designation = services.get_designation_display_name(user_hd)
 
@@ -197,38 +176,21 @@ def inbox_view(request):
         src_module='filetracking',
     )
 
-    for f in inward_files:
-        f['upload_date'] = parse_datetime(f['upload_date'])
-        last_recv = selectors.get_last_recv_tracking(
-            file_id=f['id'],
-            receiver_user=user_hd.user,
-            receive_design=user_hd.designation,
-        )
-        f['receive_date'] = last_recv.receive_date if last_recv else None
-        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
-        current_owner = selectors.get_current_file_owner(f['id'])
-        f['is_forwarded'] = (str(current_owner.username) != str(user_hd.user)) if current_owner else True
-
+    # T-10/S-27: bulk enrichment.
+    inward_files = services.enrich_inbox_files(inward_files, user_hd.user, user_hd)
     inward_files = services.add_uploader_department_to_files_list(inward_files)
 
-    subject_query = request.GET.get('subject', '')
-    sent_to_query = request.GET.get('sent_to', '')
-    date_query = request.GET.get('date', '')
-
-    if subject_query:
-        inward_files = [f for f in inward_files if subject_query.lower() in f['subject'].lower()]
-    if sent_to_query:
-        inward_files = [f for f in inward_files if sent_to_query.lower() in f.get('sent_to_user', {}).username.lower()]
-    if date_query:
-        try:
-            search_date = datetime.strptime(date_query, '%Y-%m-%d')
-            inward_files = [f for f in inward_files if f.get('last_sent_date') and f['last_sent_date'].date() == search_date.date()]
-        except ValueError:
-            inward_files = []
+    # T-01/S-08,R-01: shared filter function replaces duplicated block.
+    inward_files = services.filter_files_by_search_params(
+        inward_files,
+        subject_q=request.GET.get('subject', ''),
+        sent_to_q=request.GET.get('sent_to', ''),
+        date_q=request.GET.get('date', ''),
+        date_field='last_sent_date',
+    )
 
     paginator = Paginator(inward_files, 10)
-    page_number = request.GET.get('page')
-    page_obj = paginator.get_page(page_number)
+    page_obj = paginator.get_page(request.GET.get('page'))
 
     context = {
         'page_obj': page_obj,
@@ -243,7 +205,7 @@ def inbox_view(request):
 @user_is_student
 @dropdown_designation_valid
 def outward(request):
-    """Redirect to outbox page (R-04)."""
+    """Redirect to outbox page."""
     url = services.get_designation_redirect_url_from_session(request, 'outbox')
     return redirect(url)
 
@@ -252,7 +214,7 @@ def outward(request):
 @user_is_student
 @dropdown_designation_valid
 def inward(request):
-    """Redirect to inbox page (R-04)."""
+    """Redirect to inbox page."""
     url = services.get_designation_redirect_url_from_session(request, 'inbox')
     return redirect(url)
 
@@ -261,9 +223,8 @@ def inward(request):
 @user_is_student
 @dropdown_designation_valid
 def confirmdelete(request, id):
-    """Confirm deletion page."""
-    file = File.objects.select_related(
-        'uploader__user', 'uploader__department', 'designation').get(pk=id)
+    """T-05/S-18: raw File.objects.select_related replaced with selector."""
+    file = selectors.get_file_by_id_with_related(id)
     context = {'j': file}
     return render(request, 'filetracking/confirmdelete.html', context)
 
@@ -272,14 +233,14 @@ def confirmdelete(request, id):
 @user_is_student
 @dropdown_designation_valid
 def view_file_view(request, id):
-    """V-11: Delegates permission logic to services.get_file_view_permissions()."""
     file = get_object_or_404(File, id=id)
     track = selectors.get_tracking_for_file(file)
     designations = selectors.get_user_designations(request.user)
-
     forward_enable, archive_enable = services.get_file_view_permissions(file.id, request.user)
-
-    parent_of_prev_path = request.META.get('HTTP_REFERER', '/').strip("/").split('/')[-2] if request.META.get('HTTP_REFERER') else 'inbox'
+    parent_of_prev_path = (
+        request.META.get('HTTP_REFERER', '/').strip("/").split('/')[-2]
+        if request.META.get('HTTP_REFERER') else 'inbox'
+    )
     context = {
         'designations': designations,
         'file': file,
@@ -296,7 +257,6 @@ def view_file_view(request, id):
 @user_is_student
 @dropdown_designation_valid
 def archive_file_view(request, id):
-    """V-10: Delegates to services.archive_file_with_auth()."""
     if request.method == "POST":
         success, msg = services.archive_file_with_auth(id, request.user)
         if success:
@@ -310,49 +270,53 @@ def archive_file_view(request, id):
 @user_is_student
 @dropdown_designation_valid
 def forward(request, id):
-    """V-07, R-02: Delegates forwarding logic to services.forward_file_from_view()."""
+    """
+    T-03/S-06: deep nesting flattened using early-return on GET.
+    T-04/S-09,R-02: merged duplicate except blocks into one.
+    T-06/S-23,S-24: file/tracking state mutations moved to service calls.
+    """
     file = get_object_or_404(File, id=id)
     track = selectors.get_tracking_for_file(file)
     designations = selectors.get_user_designations(request.user)
-
-    designation_name = request.session.get('currentDesignationSelected', 'default_value')
+    designation_name = request.session.get(DESIGNATION_SESSION_KEY, DEFAULT_DESIGNATION_SESSION_VALUE)
     hd_obj = selectors.get_holds_designation_obj(request.user, designation_name)
     designation_id = hd_obj.id
 
-    if request.method == "POST":
-        if 'finish' in request.POST:
-            file.is_read = True
-            file.save()
-        if 'send' in request.POST:
-            track.update(is_read=True)
-            try:
-                services.forward_file_from_view(
-                    file_obj=file,
-                    requesting_user=request.user,
-                    sender_design_id=request.POST.get('sender'),
-                    receiver_username=request.POST.get('receiver'),
-                    receiver_designation_name=request.POST.get('receive'),
-                    upload_file=request.FILES.get('myfile'),
-                    remarks=request.POST.get('remarks'),
-                )
-                messages.success(request, 'File sent successfully')
-                return redirect(reverse('filetracking:filetracking'))
-            except User.DoesNotExist:  # V-30
-                messages.error(request, 'Enter a valid destination')
-                context = {
-                    'designations': designations, 'file': file, 'track': track,
-                    'designation_name': designation_name, 'designation_id': designation_id,
-                    'notifications': request.user.notifications.all(), 'path_parent': 'inbox',
-                }
-                return render(request, 'filetracking/forward.html', context)
-            except Designation.DoesNotExist:  # V-30
-                messages.error(request, 'Enter a valid Designation')
-                context = {
-                    'designations': designations, 'file': file, 'track': track,
-                    'designation_name': designation_name, 'designation_id': designation_id,
-                    'notifications': request.user.notifications.all(), 'path_parent': 'inbox',
-                }
-                return render(request, 'filetracking/forward.html', context)
+    # T-03/S-06: early-return on non-POST flattens outer nesting.
+    if request.method != "POST":
+        context = {
+            'designations': designations, 'file': file, 'track': track,
+            'designation_name': designation_name, 'designation_id': designation_id,
+            'notifications': request.user.notifications.all(), 'path_parent': 'inbox',
+        }
+        return render(request, 'filetracking/forward.html', context)
+
+    if 'finish' in request.POST:
+        services.mark_file_read(file.id)     # T-06/S-23
+
+    if 'send' in request.POST:
+        services.mark_tracking_read(track)   # T-06/S-24
+        try:
+            services.forward_file_from_view(
+                file_obj=file,
+                requesting_user=request.user,
+                sender_design_id=request.POST.get('sender'),
+                receiver_username=request.POST.get('receiver'),
+                receiver_designation_name=request.POST.get('receive'),
+                upload_file=request.FILES.get('myfile'),
+                remarks=request.POST.get('remarks'),
+            )
+            messages.success(request, 'File sent successfully')
+            return redirect(reverse('filetracking:filetracking'))
+        except (User.DoesNotExist, ValidationError) as e:
+            # T-04/S-09,R-02: single except block handles both exception types.
+            messages.error(request, 'Enter a valid destination or designation')
+            context = {
+                'designations': designations, 'file': file, 'track': track,
+                'designation_name': designation_name, 'designation_id': designation_id,
+                'notifications': request.user.notifications.all(), 'path_parent': 'inbox',
+            }
+            return render(request, 'filetracking/forward.html', context)
 
     context = {
         'designations': designations, 'file': file, 'track': track,
@@ -366,7 +330,7 @@ def forward(request, id):
 @user_is_student
 @dropdown_designation_valid
 def archive_design(request):
-    """Redirect to archive page (R-04)."""
+    """Redirect to archive page."""
     url = services.get_designation_redirect_url_from_session(request, 'archive')
     return redirect(url)
 
@@ -375,7 +339,7 @@ def archive_design(request):
 @user_is_student
 @dropdown_designation_valid
 def archive_view(request, id):
-    """Archive listing page."""
+    """T-10/S-29: N+1 eliminated via enrich_archive_files. T-05/S-22: no raw ORM in view."""
     user_hd = selectors.get_holds_designation_by_id(id)
     designation = services.get_designation_display_name(user_hd)
 
@@ -385,12 +349,8 @@ def archive_view(request, id):
         src_module='filetracking',
     )
 
-    from applications.globals.models import Designation
-    for f in archive_files:
-        f['upload_date'] = parse_datetime(f['upload_date'])
-        f['designation'] = Designation.objects.get(id=f['designation'])
-        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
-
+    # T-10/S-29: bulk-fetch designations and extra-infos; no per-file ORM.
+    archive_files = services.enrich_archive_files(archive_files)
     archive_files = services.add_uploader_department_to_files_list(archive_files)
 
     context = {
@@ -406,8 +366,9 @@ def archive_view(request, id):
 @user_is_student
 @dropdown_designation_valid
 def archive_finish(request, id):
+    """T-05/S-20: Tracking query routed through selector."""
     file1 = get_object_or_404(File, id=id)
-    track = Tracking.objects.filter(file_id=file1)
+    track = selectors.get_tracking_for_file(file1)   # S-20
     return render(request, 'filetracking/archive_finish.html', {'file': file1, 'track': track})
 
 
@@ -440,12 +401,12 @@ def finish_fileview(request, id):
 @user_is_student
 @dropdown_designation_valid
 def finish(request, id):
+    """T-05/S-21: ORM mutations delegated to services.finish_file()."""
     file1 = get_object_or_404(File, id=id)
-    track = Tracking.objects.filter(file_id=file1)
+    track = selectors.get_tracking_for_file(file1)   # S-21
     if request.method == "POST":
         if 'Finished' in request.POST:
-            File.objects.filter(pk=id).update(is_read=True)
-            track.update(is_read=True)
+            services.finish_file(id, track)           # S-21: no raw ORM in view
             messages.success(request, 'File Archived')
     context = {
         'file': file1, 'track': track, 'fileid': id,
@@ -454,9 +415,9 @@ def finish(request, id):
     return render(request, 'filetracking/finish.html')
 
 
-@login_required(login_url="/accounts/login")  # V-22: Added @login_required
-def AjaxDropdown1(request):
-    """Designation autocomplete. V-22: Added @login_required."""
+@login_required(login_url="/accounts/login")
+def designation_autocomplete_view(request):
+    """T-12/S-32: renamed from AjaxDropdown1 (PEP-8 snake_case)."""
     if request.method == 'POST':
         value = request.POST.get('value')
         hold = selectors.get_designations_starting_with(value)
@@ -465,9 +426,9 @@ def AjaxDropdown1(request):
         return HttpResponse(JsonResponse(context), content_type='application/json')
 
 
-@login_required(login_url="/accounts/login")  # V-22: Added @login_required
-def AjaxDropdown(request):
-    """Username autocomplete. V-22: Added @login_required."""
+@login_required(login_url="/accounts/login")
+def user_autocomplete_view(request):
+    """T-12/S-32: renamed from AjaxDropdown (PEP-8 snake_case)."""
     if request.method == 'POST':
         value = request.POST.get('value')
         users = selectors.get_users_starting_with(value)
@@ -480,7 +441,6 @@ def AjaxDropdown(request):
 @user_is_student
 @dropdown_designation_valid
 def delete(request, id):
-    """V-23: Added ownership check via services.delete_file_with_auth()."""
     try:
         services.delete_file_with_auth(id, request.user)
     except ValidationError as e:
@@ -488,11 +448,10 @@ def delete(request, id):
     return redirect('/filetracking/draftdesign/')
 
 
-@login_required(login_url="/accounts/login")  # V-24: Added @login_required
+@login_required(login_url="/accounts/login")
 @user_is_student
 @dropdown_designation_valid
 def forward_inward(request, id):
-    """V-24: Added @login_required."""
     file = get_object_or_404(File, id=id)
     file.is_read = True
     track = selectors.get_tracking_for_file(file)
@@ -513,7 +472,6 @@ def get_designations_view(request, username):
 @user_is_student
 @dropdown_designation_valid
 def unarchive_file(request, id):
-    """V-36: Fixed unreachable except — uses services.unarchive_file() (R-08)."""
     try:
         services.unarchive_file(id)
         messages.success(request, 'File unarchived')
@@ -526,7 +484,7 @@ def unarchive_file(request, id):
 @user_is_student
 @dropdown_designation_valid
 def edit_draft_view(request, id, *args, **kwargs):
-    """V-08, R-02: Delegates to services.edit_and_send_draft()."""
+    """T-07/S-25: remarks extracted from JSON via service call."""
     file = get_object_or_404(File, id=id)
     track = selectors.get_tracking_for_file(file)
 
@@ -547,20 +505,16 @@ def edit_draft_view(request, id, *args, **kwargs):
                 )
                 messages.success(request, 'File sent successfully')
                 return render(request, 'filetracking/composefile.html')
-            except User.DoesNotExist:  # V-30
-                messages.error(request, 'Enter a valid destination')
-                return redirect(reverse('filetracking:filetracking'))
-            except Designation.DoesNotExist:  # V-30
-                messages.error(request, 'Enter a valid Designation')
+            except (User.DoesNotExist, ValidationError):
+                messages.error(request, 'Enter a valid destination or designation')
                 return redirect(reverse('filetracking:filetracking'))
 
     designations = selectors.get_user_designations(request.user)
-    designation_name = request.session.get('currentDesignationSelected', 'default_value')
+    designation_name = request.session.get(DESIGNATION_SESSION_KEY, DEFAULT_DESIGNATION_SESSION_VALUE)
     hd_obj = selectors.get_holds_designation_obj(request.user, designation_name)
 
-    remarks = None
-    if file.file_extra_JSON and file.file_extra_JSON.get('remarks'):
-        remarks = file.file_extra_JSON['remarks']
+    # T-07/S-25: JSON field access moved to service function.
+    remarks = services.get_draft_remarks(file)
 
     context = {
         'designations': designations, 'file': file, 'track': track,
@@ -575,7 +529,6 @@ def edit_draft_view(request, id, *args, **kwargs):
 @dropdown_designation_valid
 @require_POST
 def download_file(request, id):
-    """V-09: Delegates to services.generate_file_download()."""
     zip_data, output_filename = services.generate_file_download(id)
     response = HttpResponse(zip_data, content_type='application/zip')
     response['Content-Disposition'] = f'attachment; filename="{output_filename}.zip"'

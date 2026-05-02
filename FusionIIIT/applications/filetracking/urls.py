@@ -1,6 +1,6 @@
-# urls.py
-# Root URL routing for the filetracking module.
-# Migrated from deprecated url() to path().
+# urls.py — root URL routing for the filetracking module.
+# T-12/S-32: Updated autocomplete URL names to match renamed view functions.
+# 5B: removed duplicate 'outward' and 'inward' aliases.
 
 from django.urls import path, include
 
@@ -15,15 +15,14 @@ urlpatterns = [
     path('drafts/<int:id>/', views.drafts_view, name='drafts_view'),
     path('outbox/<int:id>/', views.outbox_view, name='outbox_view'),
     path('inbox/', views.inbox_view, name='inbox_view'),
-    path('outward/', views.outbox_view, name='outward'),
-    path('inward/', views.inbox_view, name='inward'),
     path('confirmdelete/<int:id>/', views.confirmdelete, name='confirm_delete'),
     path('archive/<int:id>/', views.archive_view, name='archive_view'),
     path('finish/<int:id>/', views.archive_file_view, name='finish_file'),
     path('viewfile/<int:id>/', views.view_file_view, name='view_file_view'),
     path('forward/<int:id>/', views.forward, name='forward'),
-    path('ajax/', views.AjaxDropdown1, name='ajax_dropdown1'),
-    path('ajax_dropdown/', views.AjaxDropdown, name='ajax_dropdown'),
+    # T-12/S-32: snake_case names replacing AjaxDropdown1 / AjaxDropdown
+    path('ajax/', views.designation_autocomplete_view, name='designation_autocomplete'),
+    path('ajax_dropdown/', views.user_autocomplete_view, name='user_autocomplete'),
     path('delete/<int:id>/', views.delete, name='delete'),
     path('forward_inward/<int:id>/', views.forward_inward, name='forward_inward'),
     path('finish_design/', views.finish_design, name='finish_design'),

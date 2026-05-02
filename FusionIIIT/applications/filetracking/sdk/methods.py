@@ -1,7 +1,8 @@
 # sdk/methods.py
 # Thin compatibility wrapper — delegates all logic to services.py and selectors.py.
-# External modules importing from this file (e.g. complaint_system) continue to work.
-# V-41: Redistributed logic to services.py, selectors.py, utils.py.
+# T-12/S-33: uniqueList → unique_list (PEP-8 snake_case).
+#            get_ExtraInfo_object_from_username → get_extra_info_object_from_username
+#            get_HoldsDesignation_obj → get_holds_designation_obj
 
 from applications.filetracking import services
 from applications.filetracking import selectors
@@ -105,12 +106,20 @@ def get_user_object_from_username(username):
     return selectors.get_user_by_username(username)
 
 
-def get_ExtraInfo_object_from_username(username):
+# T-12/S-33: PEP-8 snake_case name; old camelCase kept as alias for backward compatibility.
+def get_extra_info_object_from_username(username):
     return selectors.get_extrainfo_by_username(username)
 
+# Backward-compat alias
+get_ExtraInfo_object_from_username = get_extra_info_object_from_username
 
-def uniqueList(l):
+
+# T-12/S-33: PEP-8 snake_case name; old camelCase kept as alias.
+def unique_list(l):
     return services.unique_list(l)
+
+# Backward-compat alias
+uniqueList = unique_list
 
 
 def add_uploader_department_to_files_list(files):
@@ -121,8 +130,12 @@ def get_designation_obj_from_name(designation):
     return selectors.get_designation_by_name(designation)
 
 
-def get_HoldsDesignation_obj(username, designation):
+# T-12/S-33: PEP-8 snake_case name; old name kept as alias.
+def get_holds_designation_obj(username, designation):
     return selectors.get_holds_designation_obj(username, designation)
+
+# Backward-compat alias
+get_HoldsDesignation_obj = get_holds_designation_obj
 
 
 def get_last_recv_tracking_for_user(file_id, username, designation):
@@ -139,3 +152,6 @@ def get_last_forw_tracking_for_user(file_id, username, designation):
 
 def get_extra_info_object_from_id(id):
     return selectors.get_extrainfo_by_id(id)
+
+# Backward-compat alias
+get_extra_info_object_from_id = get_extra_info_object_from_id

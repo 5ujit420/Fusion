@@ -1,6 +1,10 @@
 # selectors.py
 # All database queries for the filetracking module.
-# Fixes: V-02, V-40, R-05, R-06, R-07
+# T-05/S-19: get_all_files_with_related()
+# T-05/S-22: get_designation_by_id()
+# T-10/S-26,S-27,S-28,S-29: bulk selectors to eliminate N+1 loops
+# T-11/S-30,S-31: get_extrainfo_by_ids(), get_designations_by_ids()
+# T-11/S-31: get_extrainfo_by_id now uses select_related('user','department')
 
 from django.contrib.auth.models import User
 from applications.globals.models import ExtraInfo, HoldsDesignation, Designation
@@ -8,7 +12,7 @@ from .models import File, Tracking
 
 
 # ---------------------------------------------------------------------------
-# Tracking selectors  (R-05 — single select_related chain, R-06 — merged queries)
+# Tracking selectors
 # ---------------------------------------------------------------------------
 
 TRACKING_SELECT_RELATED = (
@@ -26,7 +30,7 @@ TRACKING_SELECT_RELATED = (
 
 
 def get_tracking_for_file(file_obj):
-    """Return all tracking entries for a file with full select_related (R-05)."""
+    """Return all tracking entries for a file with full select_related."""
     return (
         Tracking.objects.select_related(*TRACKING_SELECT_RELATED)
         .filter(file_id=file_obj)
@@ -49,7 +53,7 @@ def get_tracking_history(file_id):
 
 
 def get_latest_tracking(file_id):
-    """Return the most recent tracking entry for a file (R-06)."""
+    """Return the most recent tracking entry for a file."""
     return Tracking.objects.filter(file_id=file_id).order_by('-receive_date').first()
 
 
@@ -117,7 +121,75 @@ def get_last_forw_tracking(file_id, sender_extrainfo, sender_holds_designation):
 
 
 # ---------------------------------------------------------------------------
-# File selectors  (V-40)
+# Bulk tracking selectors  (T-10/S-26, S-27, S-28, S-29)
+# ---------------------------------------------------------------------------
+
+def get_last_forw_tracking_bulk(file_ids, sender_extrainfo, sender_holds_designation):
+    """
+    Return a dict mapping file_id → most-recent forwarding Tracking for a sender.
+    Single query; eliminates the per-file N+1 in outbox_view.  (T-10/S-26)
+    """
+    trackings = (
+        Tracking.objects
+        .filter(
+            file_id__in=file_ids,
+            current_id=sender_extrainfo,
+            current_design=sender_holds_designation,
+        )
+        .select_related('receiver_id', 'receive_design')
+        .order_by('file_id', '-forward_date')
+    )
+    result = {}
+    for t in trackings:
+        fid = t.file_id_id
+        if fid not in result:   # first entry per file_id = latest (ordered desc)
+            result[fid] = t
+    return result
+
+
+def get_last_recv_tracking_bulk(file_ids, receiver_user, receive_design):
+    """
+    Return a dict mapping file_id → most-recent received Tracking.
+    Single query; eliminates the per-file N+1 in inbox_view.  (T-10/S-27)
+    """
+    trackings = (
+        Tracking.objects
+        .filter(
+            file_id__in=file_ids,
+            receiver_id=receiver_user,
+            receive_design=receive_design,
+        )
+        .order_by('file_id', '-receive_date')
+    )
+    result = {}
+    for t in trackings:
+        fid = t.file_id_id
+        if fid not in result:
+            result[fid] = t
+    return result
+
+
+def get_current_file_owners_bulk(file_ids):
+    """
+    Return a dict mapping file_id → current owner User (latest receiver).
+    Single query; eliminates the per-file N+1 in inbox_view.  (T-10/S-27)
+    """
+    trackings = (
+        Tracking.objects
+        .filter(file_id__in=file_ids)
+        .select_related('receiver_id')
+        .order_by('file_id', '-receive_date')
+    )
+    result = {}
+    for t in trackings:
+        fid = t.file_id_id
+        if fid not in result:
+            result[fid] = t.receiver_id
+    return result
+
+
+# ---------------------------------------------------------------------------
+# File selectors
 # ---------------------------------------------------------------------------
 
 def get_file_by_id(file_id):
@@ -130,6 +202,13 @@ def get_file_by_id_with_related(file_id):
     return File.objects.select_related(
         'uploader__user', 'uploader__department', 'designation'
     ).get(id=file_id)
+
+
+def get_all_files_with_related():
+    """Return all Files with uploader and designation prefetched.  (T-05/S-19)"""
+    return File.objects.select_related(
+        'uploader__user', 'uploader__department', 'designation'
+    ).all()
 
 
 def get_draft_files(uploader_extrainfo, designation, src_module):
@@ -146,7 +225,7 @@ def get_draft_files(uploader_extrainfo, designation, src_module):
 
 
 # ---------------------------------------------------------------------------
-# User / ExtraInfo / Designation selectors  (R-07)
+# User / ExtraInfo / Designation selectors
 # ---------------------------------------------------------------------------
 
 def get_user_by_username(username):
@@ -162,17 +241,40 @@ def get_extrainfo_by_user(user):
 def get_extrainfo_by_username(username):
     """Return ExtraInfo from a username string."""
     user = get_user_by_username(username)
-    return ExtraInfo.objects.get(user=user)
+    return ExtraInfo.objects.select_related('user', 'department').get(user=user)
 
 
 def get_extrainfo_by_id(extra_id):
-    """Return ExtraInfo by its PK."""
-    return ExtraInfo.objects.get(id=extra_id)
+    """Return ExtraInfo by its PK.  T-11/S-31: now includes select_related to prevent lazy loads."""
+    return ExtraInfo.objects.select_related('user', 'department').get(id=extra_id)
+
+
+def get_extrainfo_by_ids(id_list):
+    """
+    Return dict mapping id → ExtraInfo for a collection of PKs.
+    Single query; eliminates per-file N+1 in all list views.  (T-10,T-11/S-28,S-29,S-31)
+    """
+    qs = ExtraInfo.objects.select_related('user', 'department').filter(id__in=id_list)
+    return {ei.id: ei for ei in qs}
 
 
 def get_designation_by_name(designation_name):
     """Return a Designation by name."""
     return Designation.objects.get(name=designation_name)
+
+
+def get_designation_by_id(pk):
+    """Return a Designation by PK.  (T-05/S-22)"""
+    return Designation.objects.get(id=pk)
+
+
+def get_designations_by_ids(id_list):
+    """
+    Return dict mapping id → Designation for a collection of PKs.
+    Single query; eliminates per-file N+1 in archive_view.  (T-10/S-29)
+    """
+    qs = Designation.objects.filter(id__in=id_list)
+    return {d.id: d for d in qs}
 
 
 def get_holds_designation(user, designation):

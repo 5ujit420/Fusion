@@ -1,7 +1,6 @@
-# api/views.py
-# Thin API views for the filetracking module.
-# All logic delegated to services.py, all queries to selectors.py.
-# Fixes: V-12–V-21, V-27, V-28, V-32–V-34
+# api/views.py — thin API views for the filetracking module.
+# T-09/S-16,R-06: inline file-size check removed from ForwardFileView;
+#                  enforcement now lives exclusively in services.forward_file().
 
 import logging
 
@@ -10,23 +9,23 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework.authentication import TokenAuthentication
 
-from ..models import File, Tracking, MAX_FILE_SIZE_BYTES
+from ..models import File, Tracking
 from .serializers import (
     FileCreateInputSerializer,
     DraftCreateInputSerializer,
+    DraftQuerySerializer,
     ForwardFileInputSerializer,
     InboxQuerySerializer,
     OutboxQuerySerializer,
     ArchiveInputSerializer,
+    ArchiveQuerySerializer,
 )
 from .. import services
 
-# V-27: Fix logger import (was `from venv import logger`)
 logger = logging.getLogger(__name__)
 
 
 class CreateFileView(APIView):
-    """V-12: Delegates to services.create_file_via_sdk()."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
@@ -52,7 +51,6 @@ class CreateFileView(APIView):
 
 
 class ViewFileView(APIView):
-    """V-13: Delegates to services.view_file_details() and services.delete_file()."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
@@ -69,7 +67,6 @@ class ViewFileView(APIView):
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, file_id):
-        """V-28: Fixed bare `return` → proper error response."""
         try:
             success = services.delete_file(int(file_id))
             if success:
@@ -91,7 +88,6 @@ class ViewFileView(APIView):
 
 
 class ViewInboxView(APIView):
-    """V-14, V-26: Delegates to services.view_inbox() with validation."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
@@ -108,7 +104,6 @@ class ViewInboxView(APIView):
 
 
 class ViewOutboxView(APIView):
-    """V-15: Delegates to services.view_outbox() with validation."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
@@ -125,7 +120,6 @@ class ViewOutboxView(APIView):
 
 
 class ViewHistoryView(APIView):
-    """V-16: Delegates to services.view_history_enriched()."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
@@ -141,7 +135,6 @@ class ViewHistoryView(APIView):
 
 
 class ForwardFileView(APIView):
-    """V-17: Delegates to services.forward_file() with serializer validation."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
@@ -151,10 +144,8 @@ class ForwardFileView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         try:
             file_attachment = request.FILES.get('file_attachment')
-            if file_attachment and file_attachment.size > MAX_FILE_SIZE_BYTES:
-                return Response({'error': 'File size exceeds limit (10 MB)'},
-                                status=status.HTTP_400_BAD_REQUEST)
-
+            # T-09/S-16,R-06: inline size check removed — services.forward_file() calls
+            # services.validate_file_size() and raises ValidationError if exceeded.
             new_tracking_id = services.forward_file(
                 int(file_id),
                 serializer.validated_data['receiver'],
@@ -170,7 +161,6 @@ class ForwardFileView(APIView):
 
 
 class CreateDraftFile(APIView):
-    """V-18: Delegates to services.create_draft_via_sdk()."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
@@ -194,16 +184,20 @@ class CreateDraftFile(APIView):
 
 
 class DraftFileView(APIView):
-    """V-19: Delegates to services.view_drafts(). Removed print() (V-34)."""
+    """5C compliance: uses DraftQuerySerializer instead of raw query_params.get."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        username = request.query_params.get('username')
-        designation = request.query_params.get('designation')
-        src_module = request.query_params.get('src_module')
+        serializer = DraftQuerySerializer(data=request.query_params)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         try:
-            draft_files = services.view_drafts(username, designation, src_module)
+            draft_files = services.view_drafts(
+                serializer.validated_data['username'],
+                serializer.validated_data.get('designation', ''),
+                serializer.validated_data['src_module'],
+            )
             return Response(draft_files, status=status.HTTP_200_OK)
         except Exception as e:
             logger.error(f"Error viewing drafts: {e}")
@@ -211,16 +205,20 @@ class DraftFileView(APIView):
 
 
 class ArchiveFileView(APIView):
-    """V-20: Delegates to services.view_archived()."""
+    """5C compliance: uses ArchiveQuerySerializer instead of raw query_params.get."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        username = request.query_params.get('username')
-        designation = request.query_params.get('designation', '')
-        src_module = request.query_params.get('src_module')
+        serializer = ArchiveQuerySerializer(data=request.query_params)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         try:
-            archived_files = services.view_archived(username, designation, src_module)
+            archived_files = services.view_archived(
+                serializer.validated_data['username'],
+                serializer.validated_data.get('designation', ''),
+                serializer.validated_data['src_module'],
+            )
             return Response(archived_files, status=status.HTTP_200_OK)
         except Exception as e:
             logger.error(f"Error viewing archives: {e}")
@@ -228,7 +226,6 @@ class ArchiveFileView(APIView):
 
 
 class CreateArchiveFile(APIView):
-    """V-20: Delegates to services.archive_file_sdk()."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
@@ -248,7 +245,6 @@ class CreateArchiveFile(APIView):
 
 
 class GetDesignationsView(APIView):
-    """V-21: Re-enabled authentication (was commented out)."""
     authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
