@@ -5,9 +5,10 @@ from applications.globals.models import ExtraInfo, HoldsDesignation, Designation
 
 
 # ---------------------------------------------------------------------------
-# Constants  (V-39)
+# Constants  (V-39, T-15/S-37)
 # ---------------------------------------------------------------------------
-MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024       # 10 MB
+FALLBACK_DEPARTMENT_CODE = 'FTS'             # S-37: named constant, no more hardcoded 'FTS'
 
 
 class File(models.Model):
