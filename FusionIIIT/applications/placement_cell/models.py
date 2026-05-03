@@ -5,8 +5,38 @@ from django.utils.translation import gettext as _
 
 from applications.academic_information.models import Student
 
-# Class definations:
 
+# ---------------------------------------------------------------------------
+# T11 / S42: Convert key Constants tuples to django.db.models.TextChoices
+# ---------------------------------------------------------------------------
+
+class PlacementType(models.TextChoices):
+    PLACEMENT = 'PLACEMENT', 'Placement'
+    PBI = 'PBI', 'PBI'
+    HIGHER_STUDIES = 'HIGHER STUDIES', 'Higher Studies'
+    OTHER = 'OTHER', 'Other'
+
+
+class InvitationType(models.TextChoices):
+    ACCEPTED = 'ACCEPTED', 'Accepted'
+    REJECTED = 'REJECTED', 'Rejected'
+    PENDING = 'PENDING', 'Pending'
+    IGNORE = 'IGNORE', 'Ignore'
+
+
+class DebarType(models.TextChoices):
+    NOT_DEBAR = 'NOT DEBAR', 'Not Debar'
+    DEBAR = 'DEBAR', 'Debar'
+
+
+class PlacedType(models.TextChoices):
+    NOT_PLACED = 'NOT PLACED', 'Not Placed'
+    PLACED = 'PLACED', 'Placed'
+
+
+# ---------------------------------------------------------------------------
+# Legacy Constants class — retained for form/field compatibility on minor types
+# ---------------------------------------------------------------------------
 
 class Constants:
     RESUME_TYPE = (
@@ -26,35 +56,17 @@ class Constants:
         ('OTHER', 'Other'),
     )
 
-    INVITATION_TYPE = (
-        ('ACCEPTED', 'Accepted'),
-        ('REJECTED', 'Rejected'),
-        ('PENDING', 'Pending'),
-        ('IGNORE', 'IGNORE'),
-    )
-
-    PLACEMENT_TYPE = (
-        ('PLACEMENT', 'Placement'),
-        ('PBI', 'PBI'),
-        ('HIGHER STUDIES', 'Higher Studies'),
-        ('OTHER', 'Other'),
-    )
-
-    PLACED_TYPE = (
-        ('NOT PLACED', 'Not Placed'),
-        ('PLACED', 'Placed'),
-    )
-
-    DEBAR_TYPE = (
-        ('NOT DEBAR', 'Not Debar'),
-        ('DEBAR', 'Debar'),
-    )
+    # Kept for reference; prefer PlacementType TextChoices in new code
+    PLACEMENT_TYPE = PlacementType.choices
+    INVITATION_TYPE = InvitationType.choices
+    PLACED_TYPE = PlacedType.choices
+    DEBAR_TYPE = DebarType.choices
 
     BTECH_DEP = (
         ('CSE', 'CSE'),
-        ('ME','ME'),
-        ('ECE','ECE'),
-          ('SM','SM'),
+        ('ME', 'ME'),
+        ('ECE', 'ECE'),
+        ('SM', 'SM'),
     )
 
     BDES_DEP = (
@@ -75,8 +87,8 @@ class Constants:
 
     PHD_DEP = (
         ('CSE', 'CSE'),
-        ('ME','ME'),
-        ('ECE','ECE'),
+        ('ME', 'ME'),
+        ('ECE', 'ECE'),
         ('DESIGN', 'DESIGN'),
         ('NS', 'NS'),
     )
@@ -124,30 +136,12 @@ class Education(models.Model):
     sdate = models.DateField(_("Date"), default=datetime.date.today)
     edate = models.DateField(null=True, blank=True)
 
-    def clean(self):
+    # T08 / S27: Removed the broken clean() that referenced self.cleaned_data,
+    # forms.ValidationError (not imported) and undefined `time`. Date validation
+    # is now enforced in EducationInputSerializer.validate_edate instead.
 
-        sdate = self.cleaned_data.get("startdate")
-        stime = self.cleaned_data.get("starttime")
-        print(sdate, "sdate")
-        today = datetime.datetime.now() - datetime.timedelta(1)
-        print(today, "today")
-        k1 = stime.hour
-        k2 = stime.minute
-        k3 = stime.second
-        x = time(k1, k2, k3)
-        date = datetime.datetime.combine(sdate, x)
-        edate = self.cleaned_data.get("enddate")
-        etime = self.cleaned_data.get("endtime")
-        k1 = etime.hour
-        k2 = etime.minute
-        k3 = etime.second
-        end_date = datetime.datetime.combine(edate, datetime.time(k1, k2, k3))
-        print(date, end_date)
-        if(date < today):
-            raise forms.ValidationError("Invalid quiz Start Date")
-        elif(date > end_date):
-            raise forms.ValidationError("Start Date but me before End Date")
-        return self.cleaned_data
+    def __str__(self):
+        return '{} - {}'.format(self.unique_id.id, self.degree)
 
 
 class Experience(models.Model):
@@ -257,11 +251,12 @@ class Achievement(models.Model):
     def __str__(self):
         return '{} - {}'.format(self.unique_id.id, self.achievement)
 
+
 class Extracurricular(models.Model):
     unique_id = models.ForeignKey(Student, on_delete=models.CASCADE)
     event_name = models.CharField(max_length=100, default='')
     event_type = models.CharField(max_length=20, choices=Constants.EVENT_TYPE,
-                                        default='OTHER')
+                                  default='OTHER')
     description = models.TextField(max_length=1000, default='', null=True, blank=True)
     name_of_position = models.CharField(max_length=200, default='')
     date_earned = models.DateField(_("Date"), default=datetime.date.today)
@@ -279,8 +274,11 @@ class MessageOfficer(models.Model):
 
 
 class NotifyStudent(models.Model):
-    placement_type = models.CharField(max_length=20, choices=Constants.PLACEMENT_TYPE,
-                                      default='PLACEMENT')
+    placement_type = models.CharField(
+        max_length=20,
+        choices=PlacementType.choices,
+        default=PlacementType.PLACEMENT,
+    )
     company_name = models.CharField(max_length=100, default='')
     ctc = models.DecimalField(decimal_places=4, max_digits=10)
     description = models.TextField(max_length=1000, default='', null=True, blank=True)
@@ -300,6 +298,7 @@ class Role(models.Model):
     def __str__(self):
         return self.role
 
+
 class CompanyDetails(models.Model):
     company_name = models.CharField(max_length=100, blank=True, null=True)
 
@@ -310,10 +309,16 @@ class CompanyDetails(models.Model):
 class PlacementStatus(models.Model):
     notify_id = models.ForeignKey(NotifyStudent, on_delete=models.CASCADE)
     unique_id = models.ForeignKey(Student, on_delete=models.CASCADE)
-    invitation = models.CharField(max_length=20, choices=Constants.INVITATION_TYPE,
-                                  default='PENDING')
-    placed = models.CharField(max_length=20, choices=Constants.PLACED_TYPE,
-                              default='NOT PLACED')
+    invitation = models.CharField(
+        max_length=20,
+        choices=InvitationType.choices,
+        default=InvitationType.PENDING,
+    )
+    placed = models.CharField(
+        max_length=20,
+        choices=PlacedType.choices,
+        default=PlacedType.NOT_PLACED,
+    )
     timestamp = models.DateTimeField(auto_now=True)
     no_of_days = models.IntegerField(default=10, null=True, blank=True)
 
@@ -322,15 +327,18 @@ class PlacementStatus(models.Model):
 
     @property
     def response_date(self):
-        return self.timestamp+datetime.timedelta(days=self.no_of_days)
+        return self.timestamp + datetime.timedelta(days=self.no_of_days)
 
     def __str__(self):
         return '{} - {}'.format(self.unique_id.id, self.notify_id.company_name)
 
 
 class PlacementRecord(models.Model):
-    placement_type = models.CharField(max_length=20, choices=Constants.PLACEMENT_TYPE,
-                                      default='PLACEMENT')
+    placement_type = models.CharField(
+        max_length=20,
+        choices=PlacementType.choices,
+        default=PlacementType.PLACEMENT,
+    )
     name = models.CharField(max_length=100, default='')
     ctc = models.DecimalField(decimal_places=2, max_digits=5, default=0)
     year = models.IntegerField(default=0)
@@ -371,8 +379,12 @@ class PlacementSchedule(models.Model):
     description = models.TextField(max_length=500, default='', null=True, blank=True)
     time = models.TimeField()
     role = models.ForeignKey(Role, on_delete=models.CASCADE, null=True, blank=True)
-    attached_file = models.FileField(upload_to='documents/placement/schedule', null=True, blank=True)
-    schedule_at = models.DateTimeField(auto_now_add=False, auto_now=False, default=timezone.now, blank=True, null=True)
+    attached_file = models.FileField(
+        upload_to='documents/placement/schedule', null=True, blank=True
+    )
+    schedule_at = models.DateTimeField(
+        auto_now_add=False, auto_now=False, default=timezone.now, blank=True, null=True
+    )
 
     def __str__(self):
         return '{} - {}'.format(self.notify_id.company_name, self.placement_date)
@@ -381,21 +393,30 @@ class PlacementSchedule(models.Model):
     def get_role(self):
         try:
             return self.role.role
-        except:
+        except Exception:
             return ''
 
 
 class StudentPlacement(models.Model):
     unique_id = models.OneToOneField(Student, primary_key=True, on_delete=models.CASCADE)
-    debar = models.CharField(max_length=20, choices=Constants.DEBAR_TYPE, default='NOT DEBAR')
-    future_aspect = models.CharField(max_length=20, choices=Constants.PLACEMENT_TYPE,
-                                     default='PLACEMENT')
-    placed_type = models.CharField(max_length=20, choices=Constants.PLACED_TYPE,
-                                   default='NOT PLACED')
+    debar = models.CharField(
+        max_length=20,
+        choices=DebarType.choices,
+        default=DebarType.NOT_DEBAR,
+    )
+    future_aspect = models.CharField(
+        max_length=20,
+        choices=PlacementType.choices,
+        default=PlacementType.PLACEMENT,
+    )
+    placed_type = models.CharField(
+        max_length=20,
+        choices=PlacedType.choices,
+        default=PlacedType.NOT_PLACED,
+    )
     placement_date = models.DateField(_("Date"), default=datetime.date.today, null=True,
                                       blank=True)
-    package = models.DecimalField(decimal_places=2, max_digits=5, null=True,
-                                  blank=True)
+    package = models.DecimalField(decimal_places=2, max_digits=5, null=True, blank=True)
 
     def __str__(self):
         return self.unique_id.id.id
