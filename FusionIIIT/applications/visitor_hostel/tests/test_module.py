@@ -134,6 +134,15 @@ class SelectorTests(BaseTestCase):
         result = selectors.get_meal_record_for_visitor_date(visitor, booking, self.today)
         self.assertIsNone(result)
 
+    def test_get_all_users(self):
+        users = selectors.get_all_users()
+        self.assertIn(self.user_intender, users)
+        self.assertIn(self.user_caretaker, users)
+
+    def test_get_user_by_id(self):
+        user = selectors.get_user_by_id(self.user_caretaker.id)
+        self.assertEqual(user, self.user_caretaker)
+
 
 # ===========================================================================
 # Service Tests

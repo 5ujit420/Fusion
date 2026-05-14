@@ -11,13 +11,68 @@ import logging
 from django.contrib.auth.decorators import login_required
 from django.http import HttpResponseRedirect, HttpResponse
 from django.shortcuts import render
-from django.contrib.auth.models import User
 
 from . import services
 from . import selectors
 from .models import BookingDetail
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------  
+# Helper functions (for RR-005: Extract Method from visitorhostel)
+# ---------------------------------------------------------------------------
+
+def get_dashboard_context(user, user_designation):
+    """Extracted dashboard context logic to reduce method length."""
+    context = {
+        'available_rooms': {},
+        'forwarded_rooms': {},
+        'cancel_booking_request': [],
+    }
+
+    if user_designation == "Intender":
+        context['pending_bookings'] = selectors.get_pending_bookings_for_intender(user)
+        context['active_bookings'] = selectors.get_active_bookings_for_intender(user)
+        context['dashboard_bookings'] = selectors.get_dashboard_bookings_for_intender(user)
+        context['complete_bookings'] = selectors.get_complete_bookings_for_intender(user)
+        context['canceled_bookings'] = selectors.get_canceled_bookings_for_intender(user)
+        context['rejected_bookings'] = selectors.get_rejected_bookings_for_intender(user)
+        context['cancel_booking_requested'] = selectors.get_cancel_requested_bookings_for_intender(user)
+    else:
+        context['pending_bookings'] = selectors.get_pending_bookings_all()
+        context['active_bookings'] = selectors.get_active_bookings_all()
+        context['dashboard_bookings'] = selectors.get_dashboard_bookings_all()
+        context['cancel_booking_request'] = selectors.get_cancel_requests_all()
+        context['complete_bookings'] = selectors.get_complete_bookings_all()
+        context['canceled_bookings'] = selectors.get_canceled_bookings_all()
+        context['rejected_bookings'] = selectors.get_rejected_bookings_all()
+        context['cancel_booking_requested'] = selectors.get_cancel_requested_for_intender(user)
+        c_bookings = selectors.get_forwarded_bookings()
+        context['available_rooms'] = services.compute_room_availability(context['pending_bookings'])
+        context['forwarded_rooms'] = services.compute_forwarded_rooms(c_bookings)
+
+    context['all_bookings'] = selectors.get_all_bookings()
+    visitors, rooms = services.get_visitor_and_room_counts(context['active_bookings'])
+    context['visitors'] = visitors
+    context['rooms'] = rooms
+
+    context['inventory'] = selectors.get_all_inventory()
+    context['inventory_bill'] = selectors.get_all_inventory_bills()
+
+    completed_booking_bills, current_balance = services.calculate_current_balance()
+    context['completed_booking_bills'] = completed_booking_bills
+    context['current_balance'] = current_balance
+    context['active_visitors'] = services.get_active_visitor_map(context['active_bookings'])
+    context['bills'] = services.calculate_active_bills(context['active_bookings'])
+    context['previous_visitors'] = selectors.get_all_visitors()
+    context['visitor_list'] = services.get_visitor_list_from_dashboard(context['dashboard_bookings'])
+
+    context['intenders'] = selectors.get_all_users()
+    context['user'] = user
+    context['user_designation'] = user_designation
+
+    return context
 
 
 @login_required(login_url='/accounts/login/')
@@ -30,69 +85,9 @@ def visitorhostel(request):
     user = request.user
     user_designation = services.get_user_designation(user)
 
-    available_rooms = {}
-    forwarded_rooms = {}
-    cancel_booking_request = []
+    context = get_dashboard_context(user, user_designation)
 
-    if user_designation == "Intender":
-        pending_bookings = selectors.get_pending_bookings_for_intender(user)
-        active_bookings = selectors.get_active_bookings_for_intender(user)
-        dashboard_bookings = selectors.get_dashboard_bookings_for_intender(user)
-        complete_bookings = selectors.get_complete_bookings_for_intender(user)
-        canceled_bookings = selectors.get_canceled_bookings_for_intender(user)
-        rejected_bookings = selectors.get_rejected_bookings_for_intender(user)
-        cancel_booking_requested = selectors.get_cancel_requested_bookings_for_intender(user)
-    else:
-        pending_bookings = selectors.get_pending_bookings_all()
-        active_bookings = selectors.get_active_bookings_all()
-        dashboard_bookings = selectors.get_dashboard_bookings_all()
-        cancel_booking_request = selectors.get_cancel_requests_all()
-        complete_bookings = selectors.get_complete_bookings_all()
-        canceled_bookings = selectors.get_canceled_bookings_all()
-        rejected_bookings = selectors.get_rejected_bookings_all()
-        cancel_booking_requested = selectors.get_cancel_requested_for_intender(user)
-        c_bookings = selectors.get_forwarded_bookings()
-
-        available_rooms = services.compute_room_availability(pending_bookings)
-        forwarded_rooms = services.compute_forwarded_rooms(c_bookings)
-
-    all_bookings = selectors.get_all_bookings()
-    visitors, rooms = services.get_visitor_and_room_counts(active_bookings)
-
-    inventory = selectors.get_all_inventory()
-    inventory_bill = selectors.get_all_inventory_bills()
-
-    completed_booking_bills, current_balance = services.calculate_current_balance()
-    active_visitors = services.get_active_visitor_map(active_bookings)
-    bills = services.calculate_active_bills(active_bookings)
-    previous_visitors = selectors.get_all_visitors()
-    visitor_list = services.get_visitor_list_from_dashboard(dashboard_bookings)
-
-    return render(request, "vhModule/visitorhostel.html", {
-        'all_bookings': all_bookings,
-        'complete_bookings': complete_bookings,
-        'pending_bookings': pending_bookings,
-        'active_bookings': active_bookings,
-        'canceled_bookings': canceled_bookings,
-        'dashboard_bookings': dashboard_bookings,
-        'bills': bills,
-        'available_rooms': available_rooms,
-        'forwarded_rooms': forwarded_rooms,
-        'inventory': inventory,
-        'inventory_bill': inventory_bill,
-        'active_visitors': active_visitors,
-        'intenders': User.objects.all(),
-        'user': user,
-        'visitors': visitors,
-        'rooms': rooms,
-        'previous_visitors': previous_visitors,
-        'completed_booking_bills': completed_booking_bills,
-        'current_balance': current_balance,
-        'rejected_bookings': rejected_bookings,
-        'cancel_booking_request': cancel_booking_request,
-        'cancel_booking_requested': cancel_booking_requested,
-        'user_designation': user_designation,
-    })
+    return render(request, "vhModule/visitorhostel.html", context)
 
 
 @login_required(login_url='/accounts/login/')
@@ -122,7 +117,7 @@ def get_inactive_bookings(request):
 @login_required(login_url='/accounts/login/')
 def get_booking_form(request):
     if request.method == 'POST':
-        intenders = User.objects.all()
+        intenders = selectors.get_all_users()
         return render(request, "vhModule/visitorhostel.html", {'intenders': intenders})
     return HttpResponseRedirect('/visitorhostel/')
 
@@ -133,7 +128,7 @@ def request_booking(request):
     if request.method == 'POST':
         try:
             intender_id = request.POST.get('intender')
-            intender_user = User.objects.get(id=intender_id)
+            intender_user = selectors.get_user_by_id(intender_id)
 
             booking_obj = services.create_booking(
                 intender_user=intender_user,

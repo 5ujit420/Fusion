@@ -10,8 +10,6 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework.authentication import TokenAuthentication
 
-from django.contrib.auth.models import User
-
 from .. import services
 from .. import selectors
 from .serializers import (
@@ -90,7 +88,7 @@ class RequestBookingView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         d = serializer.validated_data
         try:
-            intender_user = User.objects.get(id=d['intender'])
+            intender_user = selectors.get_user_by_id(d['intender'])
             booking = services.create_booking(
                 intender_user=intender_user, category=d['category'],
                 person_count=d['number_of_people'], purpose=d['purpose_of_visit'],

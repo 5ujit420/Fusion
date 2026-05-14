@@ -1,7 +1,3 @@
-# selectors.py
-# All database queries for the visitor_hostel module.
-# Fixes: V-03, V-33–V-37, R-01, R-03, R-05, R-07, R-10
-
 import datetime
 
 from django.contrib.auth.models import User
@@ -369,3 +365,17 @@ def get_incharge_user():
     elif hds.exists():
         return hds.first().user
     return None
+
+
+# ---------------------------------------------------------------------------  
+# User selectors (for RR-001, RR-002, RR-003, RR-004)
+# ---------------------------------------------------------------------------
+
+def get_all_users():
+    """Selector for all users (moved from views)."""
+    return User.objects.all()
+
+
+def get_user_by_id(user_id):
+    """Selector for user by ID (moved from views)."""
+    return User.objects.get(id=user_id)
