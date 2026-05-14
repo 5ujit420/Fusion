@@ -1,37 +1,19 @@
-from django.contrib.auth import get_user_model
-from rest_framework.authtoken.models import Token
 from rest_framework import serializers
-from notifications.models import Notification
-from applications.complaint_system.models import Caretaker, StudentComplain, ServiceProvider, Workers
-from applications.globals.models import ExtraInfo,User
-
-class StudentComplainSerializers(serializers.ModelSerializer):
-
-    class Meta:
-        model=StudentComplain
-        fields=('__all__')
-
-class WorkersSerializers(serializers.ModelSerializer):
-    class Meta:
-        model = Workers
-        fields=('__all__')
-
-class CaretakerSerializers(serializers.ModelSerializer):
-    class Meta:
-        model = Caretaker
-        fields=('__all__')
-
-class ServiceProviderSerializers(serializers.ModelSerializer):
-    class Meta:
-        model=ServiceProvider
-        fields=('__all__')
+from applications.complaint_system.serializers import (
+    StudentComplainSerializer as StudentComplainSerializers,
+    WorkersSerializer as WorkersSerializers,
+    CaretakerSerializer as CaretakerSerializers,
+    ServiceProviderSerializer as ServiceProviderSerializers,
+)
+from applications.globals.models import ExtraInfo, User
 
 class ExtraInfoSerializers(serializers.ModelSerializer):
     class Meta:
-        model=ExtraInfo
-        fields=('__all__')
+        model = ExtraInfo
+        fields = '__all__'
+
 
 class UserSerializers(serializers.ModelSerializer):
     class Meta:
-        model=User
-        fields=('__all__')
+        model = User
+        fields = '__all__'

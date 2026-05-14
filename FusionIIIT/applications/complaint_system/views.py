@@ -210,14 +210,7 @@ class SubmitFeedbackView(APIView):
         try:
             StudentComplain.objects.filter(id=complaint_id).update(feedback=feedback, flag=rating)
             a = StudentComplain.objects.filter(id=complaint_id).first()
-            care = Caretaker.objects.filter(area=a.location).first()
-            rate = care.rating
-            if rate == 0:
-                newrate = rating
-            else:
-                newrate = int((rating + rate) / 2)
-            care.rating = newrate
-            care.save()
+            update_caretaker_rating_for_location(a.location, rating)
             return Response({"success": "Feedback submitted"})
         except:
             return Response({"error": "Internal server errror"}, status=500)

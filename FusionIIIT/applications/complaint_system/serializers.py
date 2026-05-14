@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import StudentComplain, Caretaker, Warden, Complaint_Admin, Workers
+from .models import StudentComplain, Caretaker, Warden, Complaint_Admin, Workers, ServiceProvider
 
 class StudentComplainSerializer(serializers.ModelSerializer):
     class Meta:
@@ -19,6 +19,11 @@ class WardenSerializer(serializers.ModelSerializer):
 class Complaint_AdminSerializer(serializers.ModelSerializer):
     class Meta:
         model = Complaint_Admin
+        fields = '__all__'
+
+class ServiceProviderSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ServiceProvider
         fields = '__all__'
 
 class FeedbackSerializer(serializers.Serializer):
