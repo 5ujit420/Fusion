@@ -6,6 +6,7 @@ import io
 import os
 import logging
 import zipfile
+from datetime import datetime
 
 from django.core.exceptions import ValidationError
 from django.contrib.auth.models import User
@@ -72,10 +73,7 @@ def save_draft_file(uploader_user, title, description, design_id, upload_file, r
     validate_file_size(upload_file)
 
     uploader = uploader_user.extrainfo
-    holds_des = selectors.get_holds_designation_by_id(design_id)
-    designation = selectors.get_designation_by_name(
-        HoldsDesignation.objects.select_related('designation').get(id=design_id).designation.name
-    )
+    designation = selectors.get_designation_by_holdsdesignation_id(design_id)
 
     extra_json = {
         'remarks': remarks if remarks is not None else '',
@@ -266,6 +264,55 @@ def view_inbox(username, designation, src_module):
     return received_files_serialized
 
 
+def get_inbox_view_data(username, designation, src_module,
+                        subject_query='', sent_to_query='', date_query=''):
+    """Return inbox file data enriched and filtered for the UI."""
+    files = view_inbox(username, designation, src_module)
+    latest_by_file = selectors.get_latest_trackings_for_files([f['id'] for f in files])
+
+    for f in files:
+        f['upload_date'] = parse_datetime(f['upload_date'])
+        last_recv = selectors.get_last_recv_tracking(
+            file_id=f['id'],
+            receiver_user=selectors.get_user_by_username(username),
+            receive_design=selectors.get_designation_by_name(designation),
+        )
+        f['receive_date'] = last_recv.receive_date if last_recv else None
+        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
+        current_owner = latest_by_file.get(f['id'])
+        f['is_forwarded'] = (str(current_owner.receiver_id.username) != str(username)) if current_owner else True
+
+    files = add_uploader_department_to_files_list(files)
+
+    if subject_query:
+        files = [f for f in files if subject_query.lower() in (f.get('subject') or '').lower()]
+    if sent_to_query:
+        files = [
+            f for f in files
+            if f.get('sent_to_user') and sent_to_query.lower() in f['sent_to_user'].username.lower()
+        ]
+    if date_query:
+        try:
+            search_date = datetime.strptime(date_query, '%Y-%m-%d')
+            files = [
+                f for f in files
+                if f.get('last_sent_date') and f['last_sent_date'].date() == search_date.date()
+            ]
+        except ValueError:
+            files = []
+
+    return files
+
+
+def get_draft_view_data(username, designation, src_module):
+    """Return draft files ready for presentation."""
+    draft_files = view_drafts(username, designation, src_module)
+    for f in draft_files:
+        f['upload_date'] = parse_datetime(f['upload_date'])
+        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
+    return add_uploader_department_to_files_list(draft_files)
+
+
 def view_outbox(username, designation, src_module):
     """
     Return outbox files for a user+designation.
@@ -282,6 +329,52 @@ def view_outbox(username, designation, src_module):
     sent_files_unique = unique_list(sent_files)
     sent_files_serialized = FileHeaderSerializer(sent_files_unique, many=True)
     return sent_files_serialized.data
+
+
+def get_outbox_view_data(username, designation, src_module,
+                         subject_query='', sent_to_query='', date_query=''):
+    """Return outbox file data enriched and filtered for the UI."""
+    files = view_outbox(username, designation, src_module)
+    user_designation = selectors.get_designation_by_name(designation)
+    user_object = selectors.get_user_by_username(username)
+    user_holds_designation = selectors.get_holds_designation(user_object, user_designation)
+    sender_extrainfo = selectors.get_extrainfo_by_username(username)
+    sent_files_tracking = selectors.get_tracking_by_sender(
+        sender_extrainfo, user_holds_designation, src_module, is_read=False
+    )
+    latest_tracking = {}
+    for tracking in sent_files_tracking:
+        fid = tracking.file_id_id
+        current = latest_tracking.get(fid)
+        if current is None or tracking.forward_date > current.forward_date:
+            latest_tracking[fid] = tracking
+
+    for f in files:
+        tracking = latest_tracking.get(f['id'])
+        f['sent_to_user'] = tracking.receiver_id if tracking else None
+        f['sent_to_design'] = tracking.receive_design if tracking else None
+        f['last_sent_date'] = tracking.forward_date if tracking else None
+        f['upload_date'] = parse_datetime(f['upload_date'])
+        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
+
+    if subject_query:
+        files = [f for f in files if subject_query.lower() in (f.get('subject') or '').lower()]
+    if sent_to_query:
+        files = [
+            f for f in files
+            if f.get('sent_to_user') and sent_to_query.lower() in f['sent_to_user'].username.lower()
+        ]
+    if date_query:
+        try:
+            search_date = datetime.strptime(date_query, '%Y-%m-%d')
+            files = [
+                f for f in files
+                if f.get('last_sent_date') and f['last_sent_date'].date() == search_date.date()
+            ]
+        except ValueError:
+            files = []
+
+    return files
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +403,16 @@ def view_archived(username, designation, src_module):
     archived_files_unique = unique_list(archived_files)
     archived_files_serialized = FileHeaderSerializer(archived_files_unique, many=True)
     return archived_files_serialized.data
+
+
+def get_archived_view_data(username, designation, src_module):
+    """Return archived files ready for presentation."""
+    archive_files = view_archived(username, designation, src_module)
+    for f in archive_files:
+        f['upload_date'] = parse_datetime(f['upload_date'])
+        f['designation'] = selectors.get_designation_by_id(f['designation'])
+        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
+    return add_uploader_department_to_files_list(archive_files)
 
 
 def archive_file_sdk(file_id):
@@ -425,6 +528,37 @@ def forward_file_from_view(file_obj, requesting_user, sender_design_id,
     return receiver_id
 
 
+def process_forward_request(file_obj, track_qs, requesting_user, sender_design_id,
+                            receiver_username, receiver_designation_name,
+                            upload_file, remarks):
+    """Process a forward request from the web view."""
+    track_qs.update(is_read=True)
+    if upload_file is None and file_obj.upload_file:
+        upload_file = file_obj.upload_file
+    return forward_file_from_view(
+        file_obj=file_obj,
+        requesting_user=requesting_user,
+        sender_design_id=sender_design_id,
+        receiver_username=receiver_username,
+        receiver_designation_name=receiver_designation_name,
+        upload_file=upload_file,
+        remarks=remarks,
+    )
+
+
+def mark_file_read(file_id):
+    """Mark a file as read in the filetracking flow."""
+    File.objects.filter(pk=file_id).update(is_read=True)
+    return True
+
+
+def finish_file(file_id):
+    """Mark a file and its tracking entries as read."""
+    File.objects.filter(pk=file_id).update(is_read=True)
+    Tracking.objects.filter(file_id=file_id).update(is_read=True)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # View History  (V-16)
 # ---------------------------------------------------------------------------
@@ -444,12 +578,12 @@ def view_history_enriched(file_id):
     Return enriched tracking history with username/designation names (V-16).
     Preserves api/views.py ViewHistoryView L152-161.
     """
-    histories = view_history(file_id)
+    histories = selectors.get_tracking_history_with_related(file_id)
     tracking_array = []
     for history in histories:
-        temp_obj = history.copy()
-        temp_obj['receiver_id'] = User.objects.get(id=history['receiver_id']).username
-        temp_obj['receive_design'] = Designation.objects.get(id=history['receive_design']).name
+        temp_obj = TrackingSerializer(history).data
+        temp_obj['receiver_id'] = history.receiver_id.username
+        temp_obj['receive_design'] = history.receive_design.name
         tracking_array.append(temp_obj)
     return tracking_array
 
@@ -527,16 +661,7 @@ def get_file_view_permissions(file_id, requesting_user):
 # Download file  (V-09)
 # ---------------------------------------------------------------------------
 
-def generate_file_download(file_id):
-    """
-    Generate a ZIP file containing the PDF notesheet and all attachments.
-    Preserves views.py L1014-1073.
-    Returns (zip_data_bytes, output_filename).
-    """
-    from django.shortcuts import get_object_or_404
-    file_obj = get_object_or_404(File, id=file_id)
-    track = selectors.get_tracking_for_file_by_id(file_id)
-
+def _build_notesheet_pdf(file_obj, track):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
     elements = []
@@ -568,7 +693,10 @@ def generate_file_download(file_id):
     doc.build(elements)
     pdf_data = buffer.getvalue()
     buffer.close()
+    return pdf_data
 
+
+def _build_download_zip(file_obj, track, pdf_data):
     formal_filename = f'{file_obj.uploader.department.name}-{file_obj.upload_date.year}-{file_obj.upload_date.month}-#{file_obj.id}'
     output_filename = f'iiitdmj-fts-{formal_filename}'
 
@@ -581,8 +709,20 @@ def generate_file_download(file_id):
 
     zip_data = zip_buffer.getvalue()
     zip_buffer.close()
-
     return zip_data, output_filename
+
+
+def generate_file_download(file_id):
+    """
+    Generate a ZIP file containing the PDF notesheet and all attachments.
+    Preserves views.py L1014-1073.
+    Returns (zip_data_bytes, output_filename).
+    """
+    from django.shortcuts import get_object_or_404
+    file_obj = get_object_or_404(File, id=file_id)
+    track = selectors.get_tracking_for_file_by_id(file_id)
+    pdf_data = _build_notesheet_pdf(file_obj, track)
+    return _build_download_zip(file_obj, track, pdf_data)
 
 
 # ---------------------------------------------------------------------------

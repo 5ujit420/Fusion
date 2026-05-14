@@ -65,7 +65,7 @@ def get_tracking_for_uploader(uploader_extrainfo, is_read=False):
 def get_tracking_by_receiver(receiver_user, receive_design, src_module, is_read=False):
     """Return tracking entries where the user is the receiver."""
     return (
-        Tracking.objects.select_related('file_id')
+        Tracking.objects.select_related('file_id', 'receiver_id', 'receive_design', 'current_id', 'current_design')
         .filter(
             receiver_id=receiver_user,
             receive_design=receive_design,
@@ -79,7 +79,7 @@ def get_tracking_by_receiver(receiver_user, receive_design, src_module, is_read=
 def get_tracking_by_sender(sender_extrainfo, sender_holds_designation, src_module, is_read=False):
     """Return tracking entries where the user is the sender."""
     return (
-        Tracking.objects.select_related('file_id')
+        Tracking.objects.select_related('file_id', 'receiver_id', 'receive_design', 'current_design')
         .filter(
             current_id=sender_extrainfo,
             current_design=sender_holds_designation,
@@ -145,6 +145,40 @@ def get_draft_files(uploader_extrainfo, designation, src_module):
     )
 
 
+def get_files_for_compose():
+    """Return all compose files with related uploader and designation."""
+    return File.objects.select_related(
+        'uploader__user', 'uploader__department', 'designation'
+    ).all()
+
+
+def get_designation_by_holdsdesignation_id(holds_designation_id):
+    """Return the Designation object for a HoldsDesignation ID."""
+    return HoldsDesignation.objects.select_related('designation').get(id=holds_designation_id).designation
+
+
+def get_tracking_history_with_related(file_id):
+    """Return tracking history with related receiver and designation resolved."""
+    return (
+        Tracking.objects.select_related('receiver_id', 'receive_design')
+        .filter(file_id=file_id)
+        .order_by('-receive_date')
+    )
+
+
+def get_latest_trackings_for_files(file_ids):
+    """Return latest tracking entries for a set of file IDs."""
+    latest_by_file = {}
+    if not file_ids:
+        return latest_by_file
+    trackings = Tracking.objects.filter(file_id__in=file_ids).select_related('receiver_id').order_by('file_id', '-receive_date')
+    for tracking in trackings:
+        fid = tracking.file_id_id
+        if fid not in latest_by_file:
+            latest_by_file[fid] = tracking
+    return latest_by_file
+
+
 # ---------------------------------------------------------------------------
 # User / ExtraInfo / Designation selectors  (R-07)
 # ---------------------------------------------------------------------------
@@ -173,6 +207,11 @@ def get_extrainfo_by_id(extra_id):
 def get_designation_by_name(designation_name):
     """Return a Designation by name."""
     return Designation.objects.get(name=designation_name)
+
+
+def get_designation_by_id(designation_id):
+    """Return a Designation by ID."""
+    return Designation.objects.get(id=designation_id)
 
 
 def get_holds_designation(user, designation):

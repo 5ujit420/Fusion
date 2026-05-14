@@ -77,8 +77,7 @@ def filetracking(request):
     hd_obj = selectors.get_holds_designation_obj(request.user, designation_name)
 
     context = {
-        'file': File.objects.select_related(
-            'uploader__user', 'uploader__department', 'designation').all(),
+        'file': selectors.get_files_for_compose(),
         'extrainfo': selectors.get_extrainfo_by_user(request.user),
         'holdsdesignations': selectors.get_user_designations(request.user),
         'designation_name': designation_name,
@@ -105,17 +104,11 @@ def drafts_view(request, id):
     """View all drafts for a user+designation."""
     user_hd = selectors.get_holds_designation_by_id(id)
     designation = services.get_designation_display_name(user_hd)
-    draft_files = services.view_drafts(
+    draft_files = services.get_draft_view_data(
         username=user_hd.user,
         designation=user_hd.designation,
         src_module='filetracking',
     )
-
-    for f in draft_files:
-        f['upload_date'] = parse_datetime(f['upload_date'])
-        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
-
-    draft_files = services.add_uploader_department_to_files_list(draft_files)
 
     context = {
         'draft_files': draft_files,
@@ -135,39 +128,14 @@ def outbox_view(request):
     user_hd = selectors.get_holds_designation_obj(request.user, dropdown_design)
     designation = services.get_designation_display_name(user_hd)
 
-    outward_files = services.view_outbox(
+    outward_files = services.get_outbox_view_data(
         username=user_hd.user,
         designation=user_hd.designation,
         src_module='filetracking',
+        subject_query=request.GET.get('subject', ''),
+        sent_to_query=request.GET.get('sent_to', ''),
+        date_query=request.GET.get('date', ''),
     )
-
-    for f in outward_files:
-        last_forw = selectors.get_last_forw_tracking(
-            file_id=f['id'],
-            sender_extrainfo=selectors.get_extrainfo_by_username(user_hd.user),
-            sender_holds_designation=user_hd,
-        )
-        f['sent_to_user'] = last_forw.receiver_id if last_forw else None
-        f['sent_to_design'] = last_forw.receive_design if last_forw else None
-        f['last_sent_date'] = last_forw.forward_date if last_forw else None
-        f['upload_date'] = parse_datetime(f['upload_date'])
-        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
-
-    # Search filtering
-    subject_query = request.GET.get('subject', '')
-    sent_to_query = request.GET.get('sent_to', '')
-    date_query = request.GET.get('date', '')
-
-    if subject_query:
-        outward_files = [f for f in outward_files if subject_query.lower() in f['subject'].lower()]
-    if sent_to_query:
-        outward_files = [f for f in outward_files if f['sent_to_user'] and sent_to_query.lower() in f['sent_to_user'].username.lower()]
-    if date_query:
-        try:
-            search_date = datetime.strptime(date_query, '%Y-%m-%d')
-            outward_files = [f for f in outward_files if f['last_sent_date'] and f['last_sent_date'].date() == search_date.date()]
-        except ValueError:
-            outward_files = []
 
     paginator = Paginator(outward_files, 10)
     page_number = request.GET.get('page')
@@ -191,40 +159,14 @@ def inbox_view(request):
     user_hd = selectors.get_holds_designation_obj(request.user, dropdown_design)
     designation = services.get_designation_display_name(user_hd)
 
-    inward_files = services.view_inbox(
+    inward_files = services.get_inbox_view_data(
         username=user_hd.user,
         designation=user_hd.designation,
         src_module='filetracking',
+        subject_query=request.GET.get('subject', ''),
+        sent_to_query=request.GET.get('sent_to', ''),
+        date_query=request.GET.get('date', ''),
     )
-
-    for f in inward_files:
-        f['upload_date'] = parse_datetime(f['upload_date'])
-        last_recv = selectors.get_last_recv_tracking(
-            file_id=f['id'],
-            receiver_user=user_hd.user,
-            receive_design=user_hd.designation,
-        )
-        f['receive_date'] = last_recv.receive_date if last_recv else None
-        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
-        current_owner = selectors.get_current_file_owner(f['id'])
-        f['is_forwarded'] = (str(current_owner.username) != str(user_hd.user)) if current_owner else True
-
-    inward_files = services.add_uploader_department_to_files_list(inward_files)
-
-    subject_query = request.GET.get('subject', '')
-    sent_to_query = request.GET.get('sent_to', '')
-    date_query = request.GET.get('date', '')
-
-    if subject_query:
-        inward_files = [f for f in inward_files if subject_query.lower() in f['subject'].lower()]
-    if sent_to_query:
-        inward_files = [f for f in inward_files if sent_to_query.lower() in f.get('sent_to_user', {}).username.lower()]
-    if date_query:
-        try:
-            search_date = datetime.strptime(date_query, '%Y-%m-%d')
-            inward_files = [f for f in inward_files if f.get('last_sent_date') and f['last_sent_date'].date() == search_date.date()]
-        except ValueError:
-            inward_files = []
 
     paginator = Paginator(inward_files, 10)
     page_number = request.GET.get('page')
@@ -321,13 +263,12 @@ def forward(request, id):
 
     if request.method == "POST":
         if 'finish' in request.POST:
-            file.is_read = True
-            file.save()
+            services.mark_file_read(file.id)
         if 'send' in request.POST:
-            track.update(is_read=True)
             try:
-                services.forward_file_from_view(
+                services.process_forward_request(
                     file_obj=file,
+                    track_qs=track,
                     requesting_user=request.user,
                     sender_design_id=request.POST.get('sender'),
                     receiver_username=request.POST.get('receiver'),
@@ -379,19 +320,11 @@ def archive_view(request, id):
     user_hd = selectors.get_holds_designation_by_id(id)
     designation = services.get_designation_display_name(user_hd)
 
-    archive_files = services.view_archived(
+    archive_files = services.get_archived_view_data(
         username=user_hd.user,
         designation=user_hd.designation,
         src_module='filetracking',
     )
-
-    from applications.globals.models import Designation
-    for f in archive_files:
-        f['upload_date'] = parse_datetime(f['upload_date'])
-        f['designation'] = Designation.objects.get(id=f['designation'])
-        f['uploader'] = selectors.get_extrainfo_by_id(f['uploader'])
-
-    archive_files = services.add_uploader_department_to_files_list(archive_files)
 
     context = {
         'archive_files': archive_files,
@@ -444,8 +377,7 @@ def finish(request, id):
     track = Tracking.objects.filter(file_id=file1)
     if request.method == "POST":
         if 'Finished' in request.POST:
-            File.objects.filter(pk=id).update(is_read=True)
-            track.update(is_read=True)
+            services.finish_file(id)
             messages.success(request, 'File Archived')
     context = {
         'file': file1, 'track': track, 'fileid': id,
