@@ -1,4 +1,5 @@
 import datetime
+import logging
 from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext as _
@@ -125,29 +126,13 @@ class Education(models.Model):
     edate = models.DateField(null=True, blank=True)
 
     def clean(self):
-
-        sdate = self.cleaned_data.get("startdate")
-        stime = self.cleaned_data.get("starttime")
-        print(sdate, "sdate")
-        today = datetime.datetime.now() - datetime.timedelta(1)
-        print(today, "today")
-        k1 = stime.hour
-        k2 = stime.minute
-        k3 = stime.second
-        x = time(k1, k2, k3)
-        date = datetime.datetime.combine(sdate, x)
-        edate = self.cleaned_data.get("enddate")
-        etime = self.cleaned_data.get("endtime")
-        k1 = etime.hour
-        k2 = etime.minute
-        k3 = etime.second
-        end_date = datetime.datetime.combine(edate, datetime.time(k1, k2, k3))
-        print(date, end_date)
-        if(date < today):
-            raise forms.ValidationError("Invalid quiz Start Date")
-        elif(date > end_date):
-            raise forms.ValidationError("Start Date but me before End Date")
-        return self.cleaned_data
+        # Model-level validation: ensure start date is not after end date when both present.
+        # Original implementation referenced form-specific attributes (`cleaned_data`) and time
+        # fields; move to deterministic model-attribute validation.
+        if self.sdate and self.edate:
+            from django.core.exceptions import ValidationError
+            if self.sdate > self.edate:
+                raise ValidationError("Start date must be before or equal to end date")
 
 
 class Experience(models.Model):
@@ -381,7 +366,8 @@ class PlacementSchedule(models.Model):
     def get_role(self):
         try:
             return self.role.role
-        except:
+        except Exception as e:
+            logging.exception(e)
             return ''
 
 
@@ -398,4 +384,9 @@ class StudentPlacement(models.Model):
                                   blank=True)
 
     def __str__(self):
-        return self.unique_id.id.id
+        # Provide clearer, stable string representation for admin and logs.
+        try:
+            uid = getattr(self.unique_id, 'id', str(self.unique_id))
+        except Exception:
+            uid = str(self.unique_id)
+        return '{} - {}'.format(uid, self.placed_type)

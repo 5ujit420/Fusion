@@ -20,12 +20,13 @@ class HasSerializer(serializers.ModelSerializer):
         fields = ('skill_id','skill_rating')
 
     def create(self, validated_data):
+        from applications.placement_cell import services
+
         skill = validated_data.pop('skill_id')
-        skill_id, created = Skill.objects.get_or_create(**skill)
         try:
-            has_obj = Has.objects.create(skill_id=skill_id,**validated_data)
-        except:
-            raise serializers.ValidationError({'skill': 'This skill is already present'})
+            has_obj = services.create_has_for_student(skill, validated_data)
+        except ValueError as e:
+            raise serializers.ValidationError({'skill': str(e)})
         return has_obj
 
 class EducationSerializer(serializers.ModelSerializer):

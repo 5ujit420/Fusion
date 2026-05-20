@@ -23,6 +23,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.template.loader import get_template, render_to_string
 from django.utils import timezone
 from django.utils.encoding import smart_str
+from .pagination import paginate_queryset
 from xhtml2pdf import pisa
 from django.core import serializers
 from applications.academic_information.models import Student
@@ -471,7 +472,8 @@ def placement__Statistics(request):
                 try:
                     first_name = stuname.split(" ")[0]
                     last_name = stuname.split(" ")[1]
-                except:
+                except Exception as e:
+                    logging.exception(e)
                     first_name = stuname
                     last_name = ''
             else:
@@ -577,8 +579,8 @@ def placement__Statistics(request):
                         Q(first_name__icontains=request.session['first_name'],
                         last_name__icontains=request.session['last_name'])),
                         id__icontains=request.session['rollno'])))))))
-            except:
-                print('except')
+            except Exception as e:
+                logging.exception(e)
                 pbirecord = ''
 
             if pbirecord != '':
@@ -627,7 +629,8 @@ def placement__Statistics(request):
                 try:
                     first_name = stuname.split(" ")[0]
                     last_name = stuname.split(" ")[1]
-                except:
+                except Exception as e:
+                    logging.exception(e)
                     first_name = stuname
                     last_name = ''
             else:
@@ -751,7 +754,8 @@ def placement__Statistics(request):
                         last_name__icontains=request.session['last_name'])),
                               id__icontains=request.session['rollno']))
                            )))))
-            except:
+            except Exception as e:
+                logging.exception(e)
                 higherrecord = ''
 
             if higherrecord != '':
@@ -1120,12 +1124,14 @@ def Placement__Schedule(request):
 
             try:
                 comp_name = CompanyDetails.objects.filter(company_name=company_name)[0]
-            except:
+            except Exception as e:
+                logging.exception(e)
                 CompanyDetails.objects.create(company_name=company_name)
 
             try:
                 role = Role.objects.filter(role=role_offered)[0]
-            except:
+            except Exception as e:
+                logging.exception(e)
                 role = Role.objects.create(role=role_offered)
                 role.save()
 
@@ -1271,7 +1277,8 @@ def invite_status(request):
                                                               (Q(first_name__icontains=request.session['mn_stuname'])),
                                                               id__icontains=request.session['mn_rollno']))
                                                            )))))
-            except:
+            except Exception as e:
+                logging.exception(e)
                 placementstatus_placement = []
 
             if placementstatus_placement != '':
@@ -1386,7 +1393,8 @@ def invite_status(request):
                     Q(first_name__icontains=request.session['mn_pbi_stuname'])),
                                                   id__icontains=request.session['mn_pbi_rollno']))
                                                )))))
-            except:
+            except Exception as e:
+                logging.exception(e)
                 placementstatus_pbi = ''
 
             if placementstatus_pbi != '':
