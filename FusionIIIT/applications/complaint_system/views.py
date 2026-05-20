@@ -1,29 +1,57 @@
 #views.py
-import datetime
-from datetime import date, datetime, timedelta
-
-from django.contrib import messages
-from django.contrib.auth import authenticate, login
 from django.shortcuts import get_object_or_404, render
-from applications.globals.models import User, ExtraInfo, HoldsDesignation
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
 
+from applications.globals.models import User, ExtraInfo
 from notifications.models import Notification
-from .models import Caretaker,Warden, StudentComplain, ServiceProvider, ServiceAuthority, Complaint_Admin
+from .models import Caretaker, Warden, SectionIncharge, Workers, StudentComplain, ServiceProvider, ServiceAuthority, Complaint_Admin
 from notification.views import complaint_system_notif
 
 from applications.filetracking.sdk.methods import *
 from applications.filetracking.models import *
-from operator import attrgetter
 
-# Import DRF classes
-from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
 from .serializers import (
     StudentComplainSerializer,
     CaretakerSerializer,
     Complaint_AdminSerializer,
-    WardenSerializer
+    WardenSerializer,
+    FeedbackSerializer,
+    ResolvePendingSerializer,
+    WorkersSerializer
+)
+from .services import (
+    get_user_type,
+    calculate_complaint_deadline,
+    lodge_complaint,
+    resolve_complaint,
+    submit_feedback,
+    send_lodge_notification,
+    generate_report_for_user,
+    update_complaint_status,
+    forward_complaint_file,
+    validate_rating,
+    LOCATION_DESIGNATION_MAP,
+    DEADLINE_DAYS_MAP
+)
+from .selectors import (
+    get_user_extra_info,
+    get_user_type_info,
+    get_caretaker_complaints,
+    get_warden_complaints,
+    get_service_provider_complaints,
+    get_user_complaints,
+    get_complaint_detail,
+    get_all_caretakers,
+    get_all_wardens,
+    get_all_service_providers,
+    get_all_complaint_admins,
+    get_all_workers,
+    get_complaint_statistics,
+    get_active_complaints,
+    get_pending_complaints,
+    get_resolved_complaints
 )
 
 # Converted to DRF APIView
@@ -36,49 +64,9 @@ class CheckUser(APIView):
         There are three types of users: student, staff, or faculty.
         Returns the user type and the appropriate endpoint.
         """
-        a = request.user
-        b = ExtraInfo.objects.select_related("user", "department").filter(user=a).first()
-        service_provider_list = ServiceProvider.objects.all()
-        caretaker_list = Caretaker.objects.all()
-        warden_list=Warden.objects.all()
-        complaint_admin_list=Complaint_Admin.objects.all()
-        is_service_provider = False
-        is_caretaker = False
-        is_warden=False
-        is_complaint_admin = False
-        for i in complaint_admin_list:
-            if b.id == i.sup_id_id:
-                is_complaint_admin = True
-                break
-        for i in service_provider_list:
-            if b.id == i.ser_pro_id_id:
-                is_service_provider = True
-                break
-        for i in caretaker_list:
-            if b.id == i.staff_id_id:
-                is_caretaker = True
-                break
-        for i in warden_list:
-            if b.id == i.staff_id_id:
-                is_warden = True
-                break
-
-        if is_service_provider:
-            return Response({"user_type": "service_provider", "next_url": "/complaint/service_provider/"})
-        elif is_complaint_admin:
-            return Response({"user_type": "complaint_admin", "next_url": "/complaint/complaint_admin/"})
-        elif is_caretaker:
-            return Response({"user_type": "caretaker", "next_url": "/complaint/caretaker/"})
-        elif is_warden:
-            return Response({"user_type": "warden", "next_url": "/complaint/warden/"})
-        elif b.user_type == "student":
-            return Response({"user_type": "student", "next_url": "/complaint/user/"})
-        elif b.user_type == "staff":
-            return Response({"user_type": "staff", "next_url": "/complaint/user/"})
-        elif b.user_type == "faculty":
-            return Response({"user_type": "faculty", "next_url": "/complaint/user/"})
-        else:
-            return Response({"error": "wrong user credentials"}, status=400)
+        # Use service layer for user type detection - fixes N+1 query and loop-based checking
+        result = get_user_type(request.user)
+        return Response(result)
 
 # Converted to DRF APIView
 class UserComplaintView(APIView):
@@ -88,9 +76,8 @@ class UserComplaintView(APIView):
         """
         Returns the list of complaints made by the user.
         """
-        a = request.user
-        y = ExtraInfo.objects.select_related("user", "department").filter(user=a).first()
-        complaints = StudentComplain.objects.filter(complainer=y).order_by("-id")
+        # Use selector layer for optimized query
+        complaints = get_user_complaints(request.user)
         serializer = StudentComplainSerializer(complaints, many=True)
         return Response(serializer.data)
 
@@ -98,71 +85,16 @@ class UserComplaintView(APIView):
         """
         Allows the user to register a new complaint.
         """
-        a = request.user
-        y = ExtraInfo.objects.select_related("user", "department").filter(user=a).first()
-        data = request.data.copy()
-        data["complainer"] = y.id
-        data["status"] = 0
-        comp_type = data.get("complaint_type", "")
-        # Finish time is according to complaint type
-        complaint_finish = datetime.now() + timedelta(days=2)
-        if comp_type == "Electricity":
-            complaint_finish = datetime.now() + timedelta(days=2)
-        elif comp_type == "Carpenter":
-            complaint_finish = datetime.now() + timedelta(days=2)
-        elif comp_type == "Plumber":
-            complaint_finish = datetime.now() + timedelta(days=2)
-        elif comp_type == "Garbage":
-            complaint_finish = datetime.now() + timedelta(days=1)
-        elif comp_type == "Dustbin":
-            complaint_finish = datetime.now() + timedelta(days=1)
-        elif comp_type == "Internet":
-            complaint_finish = datetime.now() + timedelta(days=4)
-        elif comp_type == "Other":
-            complaint_finish = datetime.now() + timedelta(days=3)
-        data["complaint_finish"] = complaint_finish.date()
-
-        serializer = StudentComplainSerializer(data=data)
-        if serializer.is_valid():
-            complaint = serializer.save()
-
-            location = data.get("location", "")
-            if location == "hall-1":
-                dsgn = "hall1caretaker"
-            elif location == "hall-3":
-                dsgn = "hall3caretaker"
-            elif location == "hall-4":
-                dsgn = "hall4caretaker"
-            elif location == "CC1":
-                dsgn = "cc1convener"
-            elif location == "CC2":
-                dsgn = "CC2 convener"
-            elif location == "core_lab":
-                dsgn = "corelabcaretaker"
-            elif location == "LHTC":
-                dsgn = "lhtccaretaker"
-            elif location == "NR2":
-                dsgn = "nr2caretaker"
-            elif location == "Maa Saraswati Hostel":
-                dsgn = "mshcaretaker"
-            elif location == "Nagarjun Hostel":
-                dsgn = "nhcaretaker"
-            elif location == "Panini Hostel":
-                dsgn = "phcaretaker"
-            else:
-                dsgn = "rewacaretaker"
-            
-            caretakers = HoldsDesignation.objects.select_related('user', 'working', 'designation').filter(designation__name=dsgn).distinct('user')
-            
-            # Send notification to all relevant caretakers
-            student = 1
-            message = "A New Complaint has been lodged"
-            for caretaker in caretakers:
-                complaint_system_notif(request.user, caretaker.user, 'lodge_comp_alert', complaint.id, student, message)
-            
+        # Use service layer - extracts business logic from view
+        data = request.data
+        
+        success, complaint, error = lodge_complaint(request.user, data)
+        
+        if success:
+            serializer = StudentComplainSerializer(complaint)
             return Response(serializer.data, status=201)
         else:
-            return Response(serializer.errors, status=400)
+            return Response({"error": error}, status=400)
 
 # Converted to DRF APIView
 class CaretakerFeedbackView(APIView):
@@ -175,20 +107,33 @@ class CaretakerFeedbackView(APIView):
         feedback = request.data.get("feedback", "")
         rating = request.data.get("rating", "")
         caretaker_type = request.data.get("caretakertype", "")
-        try:
-            rating = int(rating)
-        except ValueError:
-            return Response({"error": "Invalid rating"}, status=400)
+        
+        # Use service layer validation
+        valid, error = validate_rating(rating)
+        if not valid:
+            return Response({"error": error}, status=400)
+        
+        # Use service layer for feedback submission
+        success, complaint, error = submit_feedback(
+            request.user, 
+            complaint_id=None,  # Not used for caretaker feedback
+            feedback_text=feedback,
+            rating=int(rating)
+        )
+        
+        # Update all caretakers in the area (legacy behavior preserved)
+        from .models import Caretaker
         all_caretaker = Caretaker.objects.filter(area=caretaker_type).order_by("-id")
         for x in all_caretaker:
             rate = x.rating
             if rate == 0:
-                newrate = rating
+                newrate = int(rating)
             else:
-                newrate = (rate + rating) / 2
+                newrate = (rate + int(rating)) / 2
             x.myfeedback = feedback
             x.rating = newrate
             x.save()
+            
         return Response({"success": "Feedback submitted"})
 
 # Converted to DRF APIView
