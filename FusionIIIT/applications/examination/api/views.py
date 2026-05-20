@@ -35,6 +35,12 @@ from reportlab.lib.units import inch
 from django.core.exceptions import ObjectDoesNotExist
 from collections import defaultdict
 from django.db.models import Case, When, IntegerField
+from applications.examination.selectors import (
+    get_grade_and_registration_queries_for_cpi,
+    get_student_grades_for_spi,
+    get_replacement_records_for_student,
+    get_users_by_usernames,
+)
 
 grade_conversion = {
     "O": 1.0, "A+": 1.0, "A": 0.9, "B+": 0.8, "B": 0.7,
@@ -96,24 +102,7 @@ def round_from_last_decimal(number, decimal_places=1):
 
 def calculate_spi_for_student(student, selected_semester, semester_type):
     semester_unit = Decimal('0')
-    grades = (
-        Student_grades.objects
-            .filter(
-                roll_no=student.id_id,
-                semester=selected_semester,
-                semester_type=semester_type
-            )
-            .annotate(
-                semester_type_order=Case(
-                    When(semester_type="Odd Semester",    then=0),
-                    When(semester_type="Even Semester",   then=1),
-                    When(semester_type="Summer Semester", then=2),
-                    default=3,
-                    output_field=IntegerField(),
-                )
-            )
-            .order_by('semester', 'semester_type_order')
-    )
+    grades = get_student_grades_for_spi(student, selected_semester, semester_type)
     total_points = Decimal('0')
     total_credits = Decimal('0')
     for g in grades:
@@ -136,56 +125,12 @@ def trace_registration(reg_id, mapping):
 
 def calculate_cpi_for_student(student, selected_semester, semester_type):
     total_unit = Decimal('0')
-    if selected_semester % 2 == 0 and semester_type == 'Summer Semester':
-        grades = (
-            Student_grades.objects
-                .filter(roll_no=student.id_id, semester__lte=selected_semester)
-                .annotate(
-                    semester_type_order=Case(
-                        When(semester_type="Odd Semester",  then=0),
-                        When(semester_type="Even Semester", then=1),
-                        When(semester_type="Summer Semester", then=2),
-                        default=3,
-                        output_field=IntegerField(),
-                    )
-                )
-                .order_by('semester', 'semester_type_order')
-        )
-        registrations = (
-            course_registration.objects
-                .select_related('course_id', 'semester_id')
-                .filter(
-                    student_id=student,
-                    semester_id__semester_no__lte=selected_semester,
-                )
-                .annotate(
-                    semester_type_order=Case(
-                        When(semester_type="Odd Semester",    then=0),
-                        When(semester_type="Even Semester",   then=1),
-                        When(semester_type="Summer Semester", then=2),
-                        default=3,
-                        output_field=IntegerField(),
-                    )
-                )
-                .order_by('semester_id__semester_no', 'semester_type_order')
-        )
-    else :
-        grades = Student_grades.objects.filter(
-            roll_no=student.id_id, semester__lte=selected_semester,
-        ).exclude(semester_type = 'Summer Semester', semester = selected_semester)
-
-        registrations = course_registration.objects.select_related('course_id', 'semester_id').filter(
-            student_id=student,
-            semester_id__semester_no__lte=selected_semester
-        ).exclude(semester_type = 'Summer Semester', semester_id__semester_no = selected_semester)
+    grades, registrations = get_grade_and_registration_queries_for_cpi(student, selected_semester, semester_type)
     reg_mapping = {}
     for reg in registrations:
         key = (reg.course_id.code.strip(), reg.semester_id.semester_no, reg.semester_type)
         reg_mapping[key] = reg.id
-    replacements = course_replacement.objects.filter(
-        Q(old_course_registration__student_id=student) |
-        Q(new_course_registration__student_id=student)
-    ).select_related('old_course_registration', 'new_course_registration')
+    replacements = get_replacement_records_for_student(student)
     reg_replacement_map = {}
     for rep in replacements:
         old_reg_id = rep.old_course_registration.id
@@ -438,10 +383,15 @@ def download_template(request):
         writer = csv.writer(response)
         writer.writerow(["roll_no", "name", "branch", "grade", "remarks", "semester"])
 
+        student_usernames = [entry.student_id_id for entry in course_info]
+        users = get_users_by_usernames(student_usernames)
+
         # Write a CSV row for each student registration.
         for entry in course_info:
             student_entry = entry.student_id
-            student_user = User.objects.get(username=student_entry.id_id)
+            student_user = users.get(student_entry.id_id)
+            if student_user is None:
+                raise User.DoesNotExist(f"User with username {student_entry.id_id} does not exist")
             branch_acronym = ""
             if student_entry.batch_id:
                 try:

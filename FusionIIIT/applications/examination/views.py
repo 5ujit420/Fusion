@@ -55,6 +55,13 @@ from rest_framework.response import Response
 from rest_framework import status
 from .models import hidden_grades, grade
 from .forms import StudentGradeForm
+from .services import (
+    build_grade_pdf_bytes,
+    build_grade_result_workbook,
+    import_grades_csv,
+    save_hidden_grades_batch,
+)
+from .selectors import get_users_by_usernames
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -379,21 +386,7 @@ class Updatehidden_gradesMultipleView(APIView):
         if len(student_ids) != len(semester_ids) != len(course_ids) != len(grades):
             return Response({'error': 'Invalid grade data provided'}, status=status.HTTP_400_BAD_REQUEST)
 
-        for student_id, semester_id, course_id, grade in zip(student_ids, semester_ids, course_ids, grades):
-            # Create an instance of hidden_grades model and save the data
-
-            try:
-                hidden_grade = hidden_grades.objects.get(
-                    course_id=course_id, student_id=student_id, semester_id=semester_id)
-                hidden_grade.grade = grade
-                hidden_grade.save()
-            except hidden_grades.DoesNotExist:
-                # If the grade doesn't exist, create a new one
-                hidden_grade = hidden_grades.objects.create(
-                    course_id=course_id, student_id=student_id, semester_id=semester_id, grade=grade)
-                hidden_grade.save()
-
-            hidden_grade.save()
+        save_hidden_grades_batch(student_ids, semester_ids, course_ids, grades)
 
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = 'attachment; filename="grades.csv"'
@@ -420,21 +413,7 @@ class Submithidden_gradesMultipleView(APIView):
         if len(student_ids) != len(semester_ids) != len(course_ids) != len(grades):
             return Response({'error': 'Invalid grade data provided'}, status=status.HTTP_400_BAD_REQUEST)
 
-        for student_id, semester_id, course_id, grade in zip(student_ids, semester_ids, course_ids, grades):
-            # Create an instance of hidden_grades model and save the data
-
-            try:
-                hidden_grade = hidden_grades.objects.get(
-                    course_id=course_id, student_id=student_id, semester_id=semester_id)
-                hidden_grade.grade = grade
-                hidden_grade.save()
-            except hidden_grades.DoesNotExist:
-                # If the grade doesn't exist, create a new one
-                hidden_grade = hidden_grades.objects.create(
-                    course_id=course_id, student_id=student_id, semester_id=semester_id, grade=grade)
-                hidden_grade.save()
-
-            hidden_grade.save()
+        save_hidden_grades_batch(student_ids, semester_ids, course_ids, grades)
 
         return render(request, '../templates/examination/grades_updated.html', {})
 
@@ -973,42 +952,7 @@ def upload_grades(request):
         
 
         try:
-            # Parse the CSV file
-            decoded_file = csv_file.read().decode("utf-8").splitlines()
-            reader = csv.DictReader(decoded_file)
-
-            required_columns = ["roll_no", "grade", "remarks"]
-            if not all(column in reader.fieldnames for column in required_columns):
-                return JsonResponse(
-                    {
-                        "error": "CSV file must contain the following columns: roll_no, grade, remarks."
-                    },
-                    status=400,
-                )
-
-            for row in reader:
-                roll_no = row["roll_no"]
-                grade = row["grade"]
-                remarks = row["remarks"]
-                semester = row["semester"] if "semester" in row and row["semester"] else None
-                stud = Student.objects.get(id_id=roll_no)
-                semester = semester or stud.curr_semester_no
-                batch=stud.batch
-                reSubmit=False
-
-                Student_grades.objects.update_or_create(
-                 roll_no=roll_no,
-                 course_id_id=course_id,
-                 year=academic_year,
-                 semester=semester,
-                 batch=batch,
-        # Fields that will be updated if a match is found
-                 defaults={
-                    'grade': grade,
-                    'remarks': remarks,
-                    'reSubmit': reSubmit,
-                }
-                )
+            import_grades_csv(csv_file, course_id, academic_year)
             des = request.session.get("currentDesignationSelected")
             if (
              str(des) == "Associate Professor"
@@ -1030,6 +974,9 @@ def upload_grades(request):
 
         except Courses.DoesNotExist:
             return JsonResponse({"error": "Invalid course ID."}, status=400)
+
+        except ValueError as e:
+            return JsonResponse({"error": str(e)}, status=400)
 
         except Exception as e:
             return JsonResponse({"error": f"An error occurred: {e}"}, status=500)
@@ -1135,11 +1082,15 @@ def download_template(request):
         # Write header
         writer.writerow(["roll_no", "name", "grade", "remarks"])
         
+        student_usernames = [entry.student_id_id for entry in course_info]
+        users = get_users_by_usernames(student_usernames)
+
         # Write student roll numbers and names
         for entry in course_info:
             student_entry = entry.student_id
-            # Fetching the user instance dynamically
-            student_user = User.objects.get(username=student_entry.id_id)
+            student_user = users.get(student_entry.id_id)
+            if student_user is None:
+                raise User.DoesNotExist(f"User with username {student_entry.id_id} does not exist")
             writer.writerow([student_entry.id_id, student_user.first_name+" "+student_user.last_name, "", ""])
         
         return response
@@ -1266,42 +1217,7 @@ def upload_grades_prof(request):
         
 
         try:
-            # Parse the CSV file
-            decoded_file = csv_file.read().decode("utf-8").splitlines()
-            reader = csv.DictReader(decoded_file)
-
-            required_columns = ["roll_no", "grade", "remarks"]
-            if not all(column in reader.fieldnames for column in required_columns):
-                return JsonResponse(
-                    {
-                        "error": "CSV file must contain the following columns: roll_no, grade, remarks."
-                    },
-                    status=400,
-                )
-
-            for row in reader:
-                roll_no = row["roll_no"]
-                grade = row["grade"]
-                remarks = row["remarks"]
-                semester = row["semester"] if "semester" in row and row["semester"] else None
-                stud = Student.objects.get(id_id=roll_no)
-                semester = semester or stud.curr_semester_no
-                batch=stud.batch
-                reSubmit=False
-
-                Student_grades.objects.update_or_create(
-                 roll_no=roll_no,
-                 course_id_id=course_id,
-                 year=academic_year,
-                 semester=semester,
-                 batch=batch,
-        # Fields that will be updated if a match is found
-                 defaults={
-                    'grade': grade,
-                    'remarks': remarks,
-                    'reSubmit': reSubmit,
-                }
-                )
+            import_grades_csv(csv_file, course_id, academic_year)
             des = request.session.get("currentDesignationSelected")
             if (
              str(des) == "Associate Professor"
@@ -1323,6 +1239,9 @@ def upload_grades_prof(request):
 
         except Courses.DoesNotExist:
             return JsonResponse({"error": "Invalid course ID."}, status=400)
+
+        except ValueError as e:
+            return JsonResponse({"error": str(e)}, status=400)
 
         except Exception as e:
             return JsonResponse({"error": f"An error occurred: {e}"}, status=500)
@@ -1535,343 +1454,59 @@ def generate_pdf(request):
             return HttpResponseRedirect('/dashboard/')
     course_id = request.POST.get('course_id')
     academic_year = request.POST.get('academic_year')
-    course_info = get_object_or_404(Courses, id=course_id)
-    grades = Student_grades.objects.filter(course_id_id=course_id, year=academic_year).order_by("roll_no")
-    course=CourseInstructor.objects.filter(course_id_id=course_id,year=academic_year,instructor_id_id=request.user.username)
-    if not course:
-         return JsonResponse({"success": False, "error": "course not found."}, status=404)
-    semester=course.first().semester_no
-    
-    all_grades = ["O", "A+", "A", "B+", "B", "C+", "C", "D+", "D", "F", "I", "S", "X"]
-    grade_counts = {grade: grades.filter(grade=grade).count() for grade in all_grades}
-
-    response = HttpResponse(content_type="application/pdf")
-    response["Content-Disposition"] = f'attachment; filename="{course_info.code}_grades.pdf"'
-
-    doc = SimpleDocTemplate(response, pagesize=letter)
-    elements = []
-    styles = getSampleStyleSheet()
-
-    # Custom Header Style
-    header_style = ParagraphStyle(
-    "HeaderStyle",
-    parent=styles["Heading1"],
-    fontName="Helvetica-Bold",
-    fontSize=16,
-    textColor=HexColor("#333333"),
-    spaceAfter=20,
-    alignment=1,  # Center alignment
-    )
-    subheader_style = ParagraphStyle(
-        "SubheaderStyle",
-        parent=styles["Normal"],
-        fontSize=12,
-        textColor=HexColor("#666666"),
-        spaceAfter=10,
-    )
     instructor = request.user.first_name + " " + request.user.last_name
 
-    # Add Header
-    elements.append(Paragraph(f"Grade Sheet", header_style))
-    field_label_style = ParagraphStyle(
-    "FieldLabelStyle",
-    parent=styles["Normal"],
-    fontSize=12,
-    textColor=colors.black,  # Black text color for labels
-    spaceAfter=5,
-)
-    field_value_style = ParagraphStyle(
-    "FieldValueStyle",
-    parent=styles["Normal"],
-    fontSize=12,
-    textColor=HexColor("#666666"),  # Gray text color for values
-    spaceAfter=10,
-)
-
-# Add fields with labels in black and values in gray
-    elements.append(Paragraph(f"<b>Session:</b> {academic_year}", field_label_style))
-    elements.append(Paragraph(f"<b>Semester:</b> {semester}", field_label_style))
-    elements.append(Paragraph(f"<b>Course Code:</b> {course_info.code}", field_label_style))
-    elements.append(Paragraph(f"<b>Course Name:</b> {course_info.name}", field_label_style))
-    elements.append(Paragraph(f"<b>Instructor:</b> {instructor}", field_label_style))
-
-    # Table Data with Wider Column Widths
-    data = [["S.No.", "Roll Number", "Grade"]]
-    for i, grade in enumerate(grades, 1):
-        data.append([i, grade.roll_no, grade.grade])
-    table = Table(data, colWidths=[80, 300, 100])
-
-    # Improved Table Style
-    table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), HexColor("#E0E0E0")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
-                ("ALIGN", (0, 0), (-1, 0), "CENTER"),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, 0), 14),
-                ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
-                ("BACKGROUND", (0, 1), (-1, -1), HexColor("#F9F9F9")),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [HexColor("#F9F9F9"), colors.white]),
-                ("TEXTCOLOR", (0, 1), (-1, -1), colors.black),
-                ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-                ("FONTSIZE", (0, 1), (-1, -1), 12),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ]
+    try:
+        pdf_bytes, filename = build_grade_pdf_bytes(
+            course_id=course_id,
+            academic_year=academic_year,
+            instructor_name=instructor,
+            instructor_username=request.user.username,
         )
-    )
-    elements.append(table)
-    elements.append(Spacer(1, 20))
+    except Courses.DoesNotExist:
+        return JsonResponse({"success": False, "error": "course not found."}, status=404)
+    except ValueError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=404)
+    except Exception as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=500)
 
-    # Add Grade Distribution with Row Splitting
-    elements.append(Paragraph(f"Grade Distribution:", header_style))
-
-    # First Grade Table
-    grade_data1 = [["O", "A+", "A", "B+", "B", "C+", "C", "D+"]]
-    grade_data1.append([grade_counts[grade] for grade in grade_data1[0]])
-    grade_table1 = Table(grade_data1, colWidths=[60] * 8)
-    grade_table1.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), HexColor("#E0E0E0")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, 0), 12),
-                ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("BACKGROUND", (0, 1), (-1, -1), colors.white),
-                ("TEXTCOLOR", (0, 1), (-1, -1), colors.black),
-            ]
-        )
-    )
-    elements.append(grade_table1)
-    elements.append(Spacer(1, 10))
-
-    # Second Grade Table
-    grade_data2 = [["D", "F", "I", "S", "X"]]
-    grade_data2.append([grade_counts[grade] for grade in grade_data2[0]])
-    grade_table2 = Table(grade_data2, colWidths=[60] * 5)
-    grade_table2.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), HexColor("#E0E0E0")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, 0), 12),
-                ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("BACKGROUND", (0, 1), (-1, -1), colors.white),
-                ("TEXTCOLOR", (0, 1), (-1, -1), colors.black),
-            ]
-        )
-    )
-    elements.append(grade_table2)
-    elements.append(Spacer(1, 40))
-
-    verified_style = ParagraphStyle(
-    "VerifiedStyle",
-    parent=styles["Normal"],
-    fontSize=13,
-    textColor=HexColor("#333333"),
-    alignment=0,  # Center alignment
-    spaceAfter=20,
-      )
-    elements.append(Paragraph("I have carefully checked and verified the submitted grade. The grade distribution and submitted grades are correct. [Please mention any exception below.]", verified_style))
-
-    # Footer Signatures
-    def draw_signatures(canvas, doc):
-        canvas.saveState()
-        width, height = letter
-        canvas.drawString(inch, 0.75 * inch, "")
-        canvas.drawString(inch, 0.5 * inch, "Date")
-        canvas.drawString(width - 4 * inch, 0.75 * inch, "")
-        canvas.drawString(width - 4 * inch, 0.5 * inch, "Course Instructor's Signature")
-        canvas.restoreState()
-
-    doc.build(elements, onLaterPages=draw_signatures, onFirstPage=draw_signatures)
+    response = HttpResponse(pdf_bytes, content_type="application/pdf")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
 
 
 @login_required(login_url="/accounts/login")
 def generate_result(request):
-    if request.method == 'POST':
-        des = request.session.get("currentDesignationSelected")
-        if des == "acadadmin":
-         pass
-        else:
-         if request.is_ajax():  # For AJAX or JSON requests
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Invalid request method'}, status=405)
+
+    des = request.session.get("currentDesignationSelected")
+    if des != "acadadmin":
+        if request.is_ajax():
             return JsonResponse({"success": False, "error": "Access denied."}, status=403)
-         else:  # For non-AJAX requests
-            return HttpResponseRedirect('/dashboard/')
-        try:
-            data = json.loads(request.body)
-            semester = data.get('semester')
-            branch = data.get('specialization')
-            batch = data.get('batch')
+        return HttpResponseRedirect('/dashboard/')
 
-            branch_info = Discipline.objects.filter(acronym=branch).first()
-            if not branch_info:
-                return JsonResponse({'error': 'Branch not found'}, status=404)
+    try:
+        data = json.loads(request.body)
+        semester = data.get('semester')
+        branch = data.get('specialization')
+        batch = data.get('batch')
 
-            curriculum_id = Batch.objects.filter(
-                year=batch, discipline_id=branch_info.id
-            ).values_list('curriculum_id', flat=True).first()
-            if not curriculum_id:
-                return JsonResponse({'error': 'Curriculum not found'}, status=404)
+        wb = build_grade_result_workbook(branch, batch, semester)
 
-            semester_info = Semester.objects.filter(
-                curriculum_id=curriculum_id, semester_no=semester
-            ).first()
-            if not semester_info:
-                return JsonResponse({'error': 'Semester not found'}, status=404)
-            # print(batch, branch)
-            course_slots = CourseSlot.objects.filter(semester_id=semester_info)
-            course_ids_from_slots = course_slots.values_list('courses', flat=True)
-            course_ids_from_grades = Student_grades.objects.filter(
-            batch=batch,
-            semester=semester
-             ).values_list('course_id_id', flat=True)
-            course_ids = set(course_ids_from_slots).union(set(course_ids_from_grades))
-            courses = Courses.objects.filter(id__in=course_ids)
-            courses_map={}
-            for course in courses:
-                courses_map[course.id]=(course.credit)
-            students = Student.objects.filter(batch=batch, specialization=branch).order_by('id')
-            # print(students.first().id_id,"studejt id")
-      
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Student Grades"
+        response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        response['Content-Disposition'] = 'attachment; filename="student_grades.xlsx"'
+        wb.save(response)
+        return response
 
-        
-            # ws.merge_cells(start_row=1, start_column=1, end_row=4, end_column=1) 
-            # ws.merge_cells(start_row=1, start_column=2, end_row=4, end_column=2) 
-            ws["A1"] = "S. No"
-            ws["B1"] = "Roll No"
-            for cell in ("A1", "B1"):
-                ws[cell].alignment = Alignment(horizontal="center", vertical="center")
-                ws[cell].font = Font(bold=True)
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON data'}, status=400)
+    except ValueError as exc:
+        return JsonResponse({'error': str(exc)}, status=404)
+    except Exception as e:
+        traceback.print_exc()
+        return JsonResponse({'error': str(e)}, status=500)
 
-      
-            ws.column_dimensions[get_column_letter(1)].width = 12  
-            ws.column_dimensions[get_column_letter(2)].width = 18 
-            col_idx = 3
-            for course in courses:
-           
-                ws.merge_cells(start_row=1, start_column=col_idx, end_row=1, end_column=col_idx + 1)
-                ws.merge_cells(start_row=2, start_column=col_idx, end_row=2, end_column=col_idx + 1)
-                ws.merge_cells(start_row=3, start_column=col_idx, end_row=3, end_column=col_idx + 1)
-
-                ws.cell(row=1, column=col_idx).value = course.code
-                ws.cell(row=1, column=col_idx).alignment = Alignment(horizontal="center", vertical="center")
-                ws.cell(row=1, column=col_idx).font = Font(bold=True)
-                ws.cell(row=2, column=col_idx).value = course.name
-                ws.cell(row=2, column=col_idx).alignment = Alignment(horizontal="center", vertical="center")
-                ws.cell(row=2, column=col_idx).font = Font(bold=True)
-                
-                ws.cell(row=3, column=col_idx).value=course.credit
-                ws.cell(row=3, column=col_idx).alignment = Alignment(horizontal="center", vertical="center")
-                ws.cell(row=3, column=col_idx).font = Font(bold=True)
-                ws.cell(row=4, column=col_idx).value = "Grade"
-                ws.cell(row=4, column=col_idx + 1).value = "Remarks"
-                ws.cell(row=4, column=col_idx).alignment = Alignment(horizontal="center", vertical="center")
-                ws.cell(row=4, column=col_idx+1).alignment = Alignment(horizontal="center", vertical="center")
-                ws.column_dimensions[get_column_letter(col_idx)].width = 25
-                ws.column_dimensions[get_column_letter(col_idx+1)].width = 25 
-                col_idx += 2
-
-            # ws.merge_cells(start_row=1, start_column=col_idx, end_row=4, end_column=col_idx)  # SPI
-            ws.cell(row=1, column=col_idx).value = "SPI"
-            ws.cell(row=1, column=col_idx).alignment = Alignment(horizontal="center", vertical="center")
-            ws.cell(row=1, column=col_idx).font = Font(bold=True)
-
-            # ws.merge_cells(start_row=1, start_column=col_idx + 1, end_row=4, end_column=col_idx + 1)  # CPI
-            ws.cell(row=1, column=col_idx + 1).value = "CPI"
-            ws.cell(row=1, column=col_idx + 1).alignment = Alignment(horizontal="center", vertical="center")
-            ws.cell(row=1, column=col_idx + 1).font = Font(bold=True)
-
-         
-            row_idx = 5
-            for idx, student in enumerate(students, start=1):
-                ws.cell(row=row_idx, column=1).value = idx
-                ws.cell(row=row_idx, column=2).value = student.id_id
-
-                ws.cell(row=row_idx, column=1).alignment = Alignment(horizontal="center", vertical="center")
-                ws.cell(row=row_idx, column=2).alignment = Alignment(horizontal="center", vertical="center")
-                student_grades = Student_grades.objects.filter(
-                    roll_no=student.id_id, course_id_id__in=course_ids, semester=semester
-                )
-               
-                grades_map = {}
-                for grade in student_grades:
-                    grades_map[grade.course_id_id] = (grade.grade, grade.remarks,courses_map.get(grade.course_id_id) )
-
-                col_idx = 3
-                gained_credit=0
-                total_credit=0
-                for course in courses:
-                    grade, remark, credits = grades_map.get(course.id, ("N/A", "N/A",0))
-                    ws.cell(row=row_idx, column=col_idx).value = grade
-                    ws.cell(row=row_idx, column=col_idx + 1).value = remark
-                    ws.cell(row=row_idx, column=col_idx).alignment = Alignment(horizontal="center", vertical="center")
-                    ws.cell(row=row_idx, column=col_idx+1).alignment = Alignment(horizontal="center", vertical="center")
-                    if grade=="O" or grade=="A+":
-                        gained_credit+=1*credits
-                        total_credit+=credits
-                    elif grade=="A":
-                        gained_credit+=0.9*credits
-                        total_credit+=credits
-                    elif grade=="B+":
-                        gained_credit+=0.8*credits
-                        total_credit+=credits
-                    elif grade=="B":
-                        gained_credit+=0.7*credits
-                        total_credit+=credits
-                    elif grade=="C+":
-                        gained_credit+=0.6*credits
-                        total_credit+=credits
-                    elif grade=="C":
-                        gained_credit+=0.5*credits
-                        total_credit+=credits
-                    elif grade=="D+":
-                        gained_credit+=0.4*credits
-                        total_credit+=credits
-                    elif grade=="D":
-                        gained_credit+=0.3*credits
-                        total_credit+=credits
-                    elif grade=="F":
-                        gained_credit+=0.2*credits
-                        total_credit+=credits
-                    
-                    
-                    col_idx += 2
-                if total_credit==0 :
-                    ws.cell(row=row_idx, column=col_idx).value =0
-                else:
-                 ws.cell(row=row_idx, column=col_idx).value = 10*(gained_credit/total_credit)
-                ws.cell(row=row_idx, column=col_idx + 1).value = 0
-                ws.cell(row=row_idx, column=col_idx).alignment = Alignment(horizontal="center", vertical="center")
-                ws.cell(row=row_idx, column=col_idx+1).alignment = Alignment(horizontal="center", vertical="center")
-
-                row_idx += 1
-
-            response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-            response['Content-Disposition'] = 'attachment; filename="student_grades.xlsx"'
-            wb.save(response)
-            return response
-
-        except json.JSONDecodeError:
-            return JsonResponse({'error': 'Invalid JSON data'}, status=400)
-        except Exception as e:
-            traceback.print_exc()
-            return JsonResponse({'error': str(e)}, status=500)
-            
-
-    return JsonResponse({'error': 'Invalid request method'}, status=405)
 
 def checkresult(request):
     des = request.session.get("currentDesignationSelected")
