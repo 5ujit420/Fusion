@@ -5,81 +5,99 @@ from django.utils.translation import gettext as _
 
 from applications.academic_information.models import Student
 
+
+class PlacementType(models.TextChoices):
+    PLACEMENT = 'PLACEMENT', 'Placement'
+    PBI = 'PBI', 'PBI'
+    HIGHER_STUDIES = 'HIGHER STUDIES', 'Higher Studies'
+    OTHER = 'OTHER', 'Other'
+
+
+class PlacedType(models.TextChoices):
+    NOT_PLACED = 'NOT PLACED', 'Not Placed'
+    PLACED = 'PLACED', 'Placed'
+
+
+class DebarType(models.TextChoices):
+    NOT_DEBAR = 'NOT DEBAR', 'Not Debar'
+    DEBAR = 'DEBAR', 'Debar'
+
+
+class ResumeType(models.TextChoices):
+    ONGOING = 'ONGOING', 'Ongoing'
+    COMPLETED = 'COMPLETED', 'Completed'
+
+
+class AchievementType(models.TextChoices):
+    EDUCATIONAL = 'EDUCATIONAL', 'Educational'
+    OTHER = 'OTHER', 'Other'
+
+
+class EventType(models.TextChoices):
+    SOCIAL = 'SOCIAL', 'Social'
+    CULTURE = 'Culture'
+    SPORT = 'Sport', 'Sport'
+    OTHER = 'OTHER', 'Other'
+
+
+class InvitationType(models.TextChoices):
+    ACCEPTED = 'ACCEPTED', 'Accepted'
+    REJECTED = 'REJECTED', 'Rejected'
+    PENDING = 'PENDING', 'Pending'
+    IGNORE = 'IGNORE', 'Ignore'
+
+
+class BtechDepartment(models.TextChoices):
+    CSE = 'CSE', 'CSE'
+    ME = 'ME', 'ME'
+    ECE = 'ECE', 'ECE'
+    SM = 'SM', 'SM'
+
+
+class BdesDepartment(models.TextChoices):
+    DESIGN = 'DESIGN', 'Design'
+
+
+class MtechDepartment(models.TextChoices):
+    CSE = 'CSE', 'CSE'
+    CAD_CAM = 'CAD/CAM', 'CAD/CAM'
+    DESIGN = 'DESIGN', 'Design'
+    MANUFACTURING = 'MANUFACTURING', 'Manufacturing'
+    MECHATRONICS = 'MECHATRONICS', 'Mechatronics'
+
+
+class MdesDepartment(models.TextChoices):
+    DESIGN = 'DESIGN', 'Design'
+
+
+class PhdDepartment(models.TextChoices):
+    CSE = 'CSE', 'CSE'
+    ME = 'ME', 'ME'
+    ECE = 'ECE', 'ECE'
+    DESIGN = 'DESIGN', 'Design'
+    NS = 'NS', 'NS'
+
+
 # Class definations:
 
 
 class Constants:
-    RESUME_TYPE = (
-        ('ONGOING', 'Ongoing'),
-        ('COMPLETED', 'Completed'),
-    )
-
-    ACHIEVEMENT_TYPE = (
-        ('EDUCATIONAL', 'Educational'),
-        ('OTHER', 'Other'),
-    )
-
-    EVENT_TYPE = (
-        ('SOCIAL', 'Social'),
-        ('CULTURE', 'Culture'),
-        ('SPORT', 'Sport'),
-        ('OTHER', 'Other'),
-    )
-
-    INVITATION_TYPE = (
-        ('ACCEPTED', 'Accepted'),
-        ('REJECTED', 'Rejected'),
-        ('PENDING', 'Pending'),
-        ('IGNORE', 'IGNORE'),
-    )
-
-    PLACEMENT_TYPE = (
-        ('PLACEMENT', 'Placement'),
-        ('PBI', 'PBI'),
-        ('HIGHER STUDIES', 'Higher Studies'),
-        ('OTHER', 'Other'),
-    )
-
-    PLACED_TYPE = (
-        ('NOT PLACED', 'Not Placed'),
-        ('PLACED', 'Placed'),
-    )
-
-    DEBAR_TYPE = (
-        ('NOT DEBAR', 'Not Debar'),
-        ('DEBAR', 'Debar'),
-    )
-
-    BTECH_DEP = (
-        ('CSE', 'CSE'),
-        ('ME','ME'),
-        ('ECE','ECE'),
-          ('SM','SM'),
-    )
-
-    BDES_DEP = (
-        ('DESIGN', 'DESIGN'),
-    )
-
-    MTECH_DEP = (
-        ('CSE', 'CSE'),
-        ('CAD/CAM', 'CAD/CAM'),
-        ('DESIGN', 'DESIGN'),
-        ('MANUFACTURING', 'MANUFACTURING'),
-        ('MECHATRONICS', 'MECHATRONICS'),
-    )
-
-    MDES_DEP = (
-        ('DESIGN', 'DESIGN'),
-    )
-
-    PHD_DEP = (
-        ('CSE', 'CSE'),
-        ('ME','ME'),
-        ('ECE','ECE'),
-        ('DESIGN', 'DESIGN'),
-        ('NS', 'NS'),
-    )
+    """Legacy constants class - kept for backward compatibility.
+    
+    Deprecated: Use individual TextChoices classes instead.
+    """
+    RESUME_TYPE = ResumeType.choices
+    ACHIEVEMENT_TYPE = AchievementType.choices
+    EVENT_TYPE = EventType.choices
+    INVITATION_TYPE = InvitationType.choices
+    PLACEMENT_TYPE = PlacementType.choices
+    PLACED_TYPE = PlacedType.choices
+    DEBAR_TYPE = DebarType.choices
+    BTECH_DEP = BtechDepartment.choices
+    BDES_DEP = BdesDepartment.choices
+    MTECH_DEP = MtechDepartment.choices
+    MDES_DEP = MdesDepartment.choices
+    PHD_DEP = PhdDepartment.choices
 
 
 class Project(models.Model):
@@ -124,30 +142,8 @@ class Education(models.Model):
     sdate = models.DateField(_("Date"), default=datetime.date.today)
     edate = models.DateField(null=True, blank=True)
 
-    def clean(self):
-
-        sdate = self.cleaned_data.get("startdate")
-        stime = self.cleaned_data.get("starttime")
-        print(sdate, "sdate")
-        today = datetime.datetime.now() - datetime.timedelta(1)
-        print(today, "today")
-        k1 = stime.hour
-        k2 = stime.minute
-        k3 = stime.second
-        x = time(k1, k2, k3)
-        date = datetime.datetime.combine(sdate, x)
-        edate = self.cleaned_data.get("enddate")
-        etime = self.cleaned_data.get("endtime")
-        k1 = etime.hour
-        k2 = etime.minute
-        k3 = etime.second
-        end_date = datetime.datetime.combine(edate, datetime.time(k1, k2, k3))
-        print(date, end_date)
-        if(date < today):
-            raise forms.ValidationError("Invalid quiz Start Date")
-        elif(date > end_date):
-            raise forms.ValidationError("Start Date but me before End Date")
-        return self.cleaned_data
+    def __str__(self):
+        return '{} - {}'.format(self.unique_id.id, self.degree)
 
 
 class Experience(models.Model):
@@ -376,13 +372,6 @@ class PlacementSchedule(models.Model):
 
     def __str__(self):
         return '{} - {}'.format(self.notify_id.company_name, self.placement_date)
-
-    @property
-    def get_role(self):
-        try:
-            return self.role.role
-        except:
-            return ''
 
 
 class StudentPlacement(models.Model):

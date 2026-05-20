@@ -6,27 +6,37 @@ from applications.placement_cell.models import (Achievement, Course, Education,
                                                 Project, Publication, Skill,
                                                 PlacementStatus, NotifyStudent)
 
+
 class SkillSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Skill
-        fields = ('__all__')
+        fields = '__all__'
+
 
 class HasSerializer(serializers.ModelSerializer):
     skill_id = SkillSerializer()
 
     class Meta:
         model = Has
-        fields = ('skill_id','skill_rating')
+        fields = ('skill_id', 'skill_rating')
 
     def create(self, validated_data):
-        skill = validated_data.pop('skill_id')
-        skill_id, created = Skill.objects.get_or_create(**skill)
+        """Create Has object. Note: Business logic for skill creation should be in service layer."""
+        skill_data = validated_data.pop('skill_id')
+        
+        # Get or create the skill - this should ideally be done in a service layer
+        skill, created = Skill.objects.get_or_create(**skill_data)
+        
         try:
-            has_obj = Has.objects.create(skill_id=skill_id,**validated_data)
-        except:
-            raise serializers.ValidationError({'skill': 'This skill is already present'})
-        return has_obj
+            has_obj = Has.objects.create(skill_id=skill, **validated_data)
+            return has_obj
+        except Exception as e:
+            # Log the error properly instead of silent failure
+            import logging
+            logger = logging.getLogger('django.server')
+            logger.error(f"Failed to create Has object: {e}")
+            raise serializers.ValidationError({'skill': 'This skill is already present for this student'})
 
 class EducationSerializer(serializers.ModelSerializer):
 
